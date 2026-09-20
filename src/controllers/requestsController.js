@@ -16,6 +16,7 @@ export const requestsController = {
     }),
 
     create: asyncHandler(async (req, res) => {
+        console.log('req', req)
         const created = await requestsService.create(req.body);
         res.status(201).location(`/api/requests/${created.id}`).json({ data: created });
     }),

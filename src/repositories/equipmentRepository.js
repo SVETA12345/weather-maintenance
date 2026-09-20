@@ -24,6 +24,9 @@ export const equipmentRepository = {
         store.set(entity.id, entity);
         return entity;
     },
+    async reset() {
+        store.clear();
+    },
     async update(id, patch) {
         const current = store.get(id);
         if (!current) return null;

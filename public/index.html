@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Заявки на обслуживание</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --border: #dfe3e8;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 13px; color: var(--muted); }
+  select, input, textarea, button {
+    font: inherit;
+    border-radius: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+  }
+  textarea { resize: vertical; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .form-grid .wide { grid-column: 1 / -1; }
+  button {
+    cursor: pointer;
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 600;
+    transition: opacity .15s;
+  }
+  button:hover { opacity: .9; }
+  button.ghost { background: #fff; color: var(--text); border-color: var(--border); font-weight: 400; }
+  button.sm { padding: 4px 10px; font-size: 13px; }
+  button.danger { background: var(--danger); border-color: var(--danger); }
+  #message {
+    display: none;
+    padding: 12px 14px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 14px;
+  }
+  #message.error { display: block; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+  #message.success { display: block; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+  #message ul { margin: 8px 0 0; padding-left: 20px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; white-space: nowrap; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Заявки на техническое обслуживание</h1>
+  <p class="subtitle">Список заявок и создание новых через REST API (<code>/api/requests</code>)</p>
+
+  <div id="message"></div>
+
+  <div class="panel">
+    <h2>Фильтры</h2>
+    <div class="filters">
+      <div class="field">
+        <label for="f-status">Статус</label>
+        <select id="f-status">
+          <option value="">Все статусы</option>
+          <option value="new">Новая</option>
+          <option value="in_progress">В работе</option>
+          <option value="done">Выполнена</option>
+          <option value="rejected">Отклонена</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-priority">Приоритет</label>
+        <select id="f-priority">
+          <option value="">Все приоритеты</option>
+          <option value="low">Низкий</option>
+          <option value="medium">Средний</option>
+          <option value="high">Высокий</option>
+          <option value="critical">Критический</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-equipment">Оборудование</label>
+        <select id="f-equipment">
+          <option value="">Всё оборудование</option>
+        </select>
+      </div>
+      <button class="ghost" id="f-reset" type="button">Сбросить</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Создать заявку</h2>
+    <form id="create-form" class="form-grid">
+      <div class="field">
+        <label for="c-equipment">Оборудование *</label>
+        <select id="c-equipment" required></select>
+      </div>
+      <div class="field">
+        <label for="c-priority">Приоритет *</label>
+        <select id="c-priority" required>
+          <option value="low">Низкий</option>
+          <option value="medium" selected>Средний</option>
+          <option value="high">Высокий</option>
+          <option value="critical">Критический</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="c-planned">Планируемая дата</label>
+        <input type="datetime-local" id="c-planned">
+      </div>
+      <div class="field wide">
+        <label for="c-title">Название *</label>
+        <input type="text" id="c-title" minlength="5" maxlength="120" required placeholder="Например: плановое ТО ветроустановки">
+      </div>
+      <div class="field wide">
+        <label for="c-description">Описание</label>
+        <textarea id="c-description" rows="3" maxlength="2000" placeholder="Детали работ (необязательно)"></textarea>
+      </div>
+      <div class="field">
+        <button type="submit">Создать заявку</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Список заявок</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Название</th>
+          <th>Приоритет</th>
+          <th>Статус</th>
+          <th>Оборудование</th>
+          <th>Планируется</th>
+          <th>Создана</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="pagination">
+      <span class="muted" id="info"></span>
+      <div class="actions">
+        <button class="ghost sm" id="prev" type="button">&larr; Назад</button>
+        <button class="ghost sm" id="next" type="button">Вперёд &rarr;</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

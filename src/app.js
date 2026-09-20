@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { logger } from './utils/logger.js';
 import { contextMiddleware } from './utils/context.js';
@@ -12,14 +13,15 @@ import { notFound } from './middlewares/notFound.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 import { config } from './config/index.js';
 
+const publicDir = fileURLToPath(new URL('../public', import.meta.url));
+
 // Логирование HTTP-запросов: пара «запрос–ответ», единый request id.
 const httpLogger = pinoHttp({
   logger,
   genReqId(req, res) {
     // Принимаем X-Request-Id от вышестоящего сервиса/прокси, иначе генерируем свой.
     const existing = req.id ?? req.headers['x-request-id'];
-    if (existing) return String(existing);
-    const id = randomUUID();
+    const id = existing ? String(existing) : randomUUID();
     res.setHeader('X-Request-Id', id);
     return id;
   },
@@ -40,16 +42,23 @@ export function createApp() {
   app.use(helmet());
 
   // 2. CORS с явным списком источников
-  app.use(
+  app.use((req, res, next) => {
+    // Браузеры отправляют Origin даже на same-origin POST/PATCH (защита от CSRF),
+    // поэтому адрес самого сервера всегда разрешён, на каком бы порту он ни был.
+    const self = `${req.protocol}://${req.headers.host}`;
     cors({
       origin: (origin, cb) => {
-        if (!origin || config.corsOrigins.includes(origin)) return cb(null, true);
-        cb(new Error('CORS: источник не разрешён'));
+        // null — Origin при открытии страницы как файла (file://);
+        // отсутствие Origin — curl, Postman, супертest-запросы.
+        if (!origin || origin === 'null' || origin === self || config.corsOrigins.includes(origin)) return cb(null, true);
+        const err = new Error(`CORS: источник не разрешён (${origin})`);
+        logger.warn({ event: 'cors_blocked', origin }, 'Заблокирован запрос из-за CORS');
+        cb(err);
       },
       methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
       credentials: false,
-    }),
-  );
+    })(req, res, next);
+  });
 
   // 3. Логирование запросов + request id
   app.use(httpLogger);
@@ -59,6 +68,9 @@ export function createApp() {
 
   // 5. Разбор JSON с ограничением размера
   app.use(express.json({ limit: '100kb' }));
+
+  // 5.1 Статика (простая веб-страница обслуживания) — отдельный процесс/прокси не нужен
+  app.use(express.static(publicDir));
 
   // 6. Ограничение частоты запросов на /api
   app.use(
