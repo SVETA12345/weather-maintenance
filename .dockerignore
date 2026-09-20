@@ -1,0 +1,15 @@
+node_modules
+npm - debug.log *
+.env
+        .env.*
+    !.env.example
+reports
+coverage
+    .git
+    .gitignore
+    .vscode
+    .idea
+docs
+    *.md
+Dockerfile
+docker - compose.yml
