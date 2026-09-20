@@ -4,6 +4,7 @@ import { NotFoundError } from '../errors/NotFoundError.js';
 import { ConflictError } from '../errors/ConflictError.js';
 import { ValidationError } from '../errors/ValidationError.js';
 import { paginate } from '../utils/pagination.js';
+import { getLog } from '../utils/context.js';
 
 const TRANSITIONS = {
     new: ['in_progress', 'rejected'],
@@ -40,28 +41,36 @@ export const requestsService = {
     async create(data) {
         const equipment = await equipmentRepository.findById(data.equipmentId);
         if (!equipment) throw new NotFoundError('Оборудование');
-        return requestsRepository.create(data);
+        const created = await requestsRepository.create(data);
+        getLog().info({ event: 'request_created', id: created.id, equipmentId: created.equipmentId }, 'Заявка создана');
+        return created;
     },
 
     async update(id, patch) {
-        await this.getById(id);
-        return requestsRepository.update(id, patch);
+        const current = await this.getById(id);
+        const updated = await requestsRepository.update(id, patch);
+        getLog().info({ event: 'request_updated', id, from: current, to: patch }, 'Заявка обновлена');
+        return updated;
     },
 
     async changeStatus(id, status) {
         const current = await this.getById(id);
         const allowed = TRANSITIONS[current.status] ?? [];
         if (!allowed.includes(status)) {
+            getLog().warn({ event: 'invalid_status_transition', id, from: current.status, to: status }, 'Недопустимый переход статуса');
             throw new ConflictError(
                 `Недопустимый переход статуса: ${current.status} → ${status}`,
                 'INVALID_STATUS_TRANSITION',
             );
         }
-        return requestsRepository.update(id, { status });
+        const updated = await requestsRepository.update(id, { status });
+        getLog().info({ event: 'request_status_changed', id, from: current.status, to: status }, 'Статус заявки изменён');
+        return updated;
     },
 
     async remove(id) {
         await this.getById(id);
         await requestsRepository.remove(id);
+        getLog().info({ event: 'request_removed', id }, 'Заявка удалена');
     },
 };

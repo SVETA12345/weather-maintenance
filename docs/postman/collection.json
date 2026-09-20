@@ -1,37 +1,47 @@
 {
   "info": {
     "name": "weather-maintenance-api",
-    "description": "REST API для планирования технического обслуживания оборудования с учётом погоды.\n\nОпределите переменную окружения Postman `baseUrl`, например `http://localhost:3000`.",
+    "description": "REST API для планирования технического обслуживания оборудования с учётом погоды.\n\nКак пользоваться:\n- Укажите переменную коллекции `baseUrl` (по умолчанию http://localhost:3000).\n- Запускайте запросы сверху вниз: id созданных сущностей автоматически сохраняются в переменные `equipmentId` и `requestId` и подставляются в следующие запросы.\n- Негативные сценарии вынесены в отдельные папки (- Error).\n- Тест «Превышение лимита частоты (429)» намеренно исчерпывает rate-limit (отправляет ~105 запросов), окно ограничения — 15 минут, повторный запуск тестов в течение окна будет получать 429.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    {
-      "key": "baseUrl",
-      "value": "http://localhost:3000",
-      "type": "string"
-    }
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "equipmentId", "value": "", "type": "string" },
+    { "key": "requestId", "value": "", "type": "string" },
+    { "key": "fakeId", "value": "00000000-0000-4000-8000-000000000000", "type": "string" }
   ],
   "item": [
     {
-      "name": "Health",
+      "name": "1. Статус сервиса",
       "item": [
         {
           "name": "Получить статус сервиса",
           "request": {
             "method": "GET",
             "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/health",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "health"]
-            },
-            "description": "Проверка доступности сервиса."
-          }
+            "url": { "raw": "{{baseUrl}}/api/health", "host": ["{{baseUrl}}"], "path": ["api", "health"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Тело содержит status и timestamp', () => {",
+                  "    pm.expect(body).to.have.property('status').eql('ok');",
+                  "    pm.expect(body).to.have.property('timestamp').and.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "Оборудование",
+      "name": "2. Оборудование",
       "item": [
         {
           "name": "Список оборудования",
@@ -39,33 +49,63 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/equipment?page=1&pageSize=20",
+              "raw": "{{baseUrl}}/api/equipment?page=1&limit=20",
               "host": ["{{baseUrl}}"],
               "path": ["api", "equipment"],
               "query": [
                 { "key": "page", "value": "1" },
-                { "key": "pageSize", "value": "20" }
+                { "key": "limit", "value": "20" }
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Тело содержит data[] и meta{total,page,limit}', () => {",
+                  "    pm.expect(body).to.have.property('data').and.be.an('array');",
+                  "    pm.expect(body.meta).to.have.property('total').and.be.a('number');",
+                  "    pm.expect(body.meta).to.have.property('limit');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "Создать оборудование",
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Трансформатор ТП-12\",\n  \"type\": \"transformer\",\n  \"location\": {\n    \"latitude\": 55.7558,\n    \"longitude\": 37.6173,\n    \"city\": \"Москва\"\n  },\n  \"criticality\": \"high\",\n  \"installationDate\": \"2020-06-15\"\n}"
+              "raw": "{\n  \"name\": \"Сетевой инвертор NS-12\",\n  \"type\": \"inverter\",\n  \"serialNumber\": \"SN-INV-001\",\n  \"location\": { \"lat\": 51.5, \"lon\": -0.12 },\n  \"installedAt\": \"2025-03-01T00:00:00.000Z\"\n}"
             },
-            "url": {
-              "raw": "{{baseUrl}}/api/equipment",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "equipment"]
+            "url": { "raw": "{{baseUrl}}/api/equipment", "host": ["{{baseUrl}}"], "path": ["api", "equipment"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 201', () => pm.expect(pm.response.code).to.eql(201));",
+                  "pm.test('Созданная сущность содержит id и serialNumber', () => {",
+                  "    pm.expect(body).to.have.property('data');",
+                  "    pm.expect(body.data.id).to.be.a('string');",
+                  "    pm.expect(body.data.serialNumber).to.eql('SN-INV-001');",
+                  "    pm.expect(body.data).to.have.property('status').eql('operational');",
+                  "});",
+                  "pm.collectionVariables.set('equipmentId', body.data.id);"
+                ],
+                "type": "text/javascript"
+              }
             }
-          }
+          ]
         },
         {
           "name": "Оборудование по id",
@@ -73,147 +113,86 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/equipment/eq_placeholder",
+              "raw": "{{baseUrl}}/api/equipment/{{equipmentId}}",
               "host": ["{{baseUrl}}"],
               "path": ["api", "equipment", ":id"],
-              "variable": [{ "key": "id", "value": "eq_placeholder" }]
+              "variable": [{ "key": "id", "value": "{{equipmentId}}" }]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Вернулось то же оборудование', () => {",
+                  "    pm.expect(body.data.id).to.eql(pm.collectionVariables.get('equipmentId'));",
+                  "    pm.expect(body.data.location).to.have.property('lat').and.be.a('number');",
+                  "    pm.expect(body.data.location).to.have.property('lon').and.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "Обновить оборудование",
           "request": {
             "method": "PATCH",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"status\": \"maintenance\",\n  \"criticality\": \"medium\"\n}"
-            },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"maintenance\",\n  \"name\": \"Сетевой инвертор NS-12 (модернизированный)\"\n}" },
             "url": {
-              "raw": "{{baseUrl}}/api/equipment/eq_placeholder",
+              "raw": "{{baseUrl}}/api/equipment/{{equipmentId}}",
               "host": ["{{baseUrl}}"],
               "path": ["api", "equipment", ":id"],
-              "variable": [{ "key": "id", "value": "eq_placeholder" }]
+              "variable": [{ "key": "id", "value": "{{equipmentId}}" }]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Поле status обновлено на maintenance', () => {",
+                  "    pm.expect(body.data.status).to.eql('maintenance');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
-          "name": "Удалить оборудование",
-          "request": {
-            "method": "DELETE",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/equipment/eq_placeholder",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "equipment", ":id"],
-              "variable": [{ "key": "id", "value": "eq_placeholder" }]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "Заявки на обслуживание",
-      "item": [
-        {
-          "name": "Список заявок",
+          "name": "Заявки оборудования",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/requests?status=pending",
+              "raw": "{{baseUrl}}/api/equipment/{{equipmentId}}/requests",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "requests"],
-              "query": [{ "key": "status", "value": "pending" }]
+              "path": ["api", "equipment", ":id", "requests"],
+              "variable": [{ "key": "id", "value": "{{equipmentId}}" }]
             }
-          }
-        },
-        {
-          "name": "Создать заявку (приоритет из погоды)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"equipmentId\": \"eq_placeholder\",\n  \"type\": \"preventive\",\n  \"scheduledDate\": \"2026-09-25\",\n  \"notes\": \"Плановое ТО перед сезоном дождей\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/requests",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "requests"]
-            },
-            "description": "Если priority не передан, он рассчитывается из текущей погоды в точке установки оборудования."
-          }
-        },
-        {
-          "name": "Заявка по id",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/requests/req_placeholder",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "requests", ":id"],
-              "variable": [{ "key": "id", "value": "req_placeholder" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Тело содержит массив data (возможно пустой)', () => {",
+                  "    pm.expect(body).to.have.property('data').and.be.an('array');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
             }
-          }
-        },
-        {
-          "name": "Обновить заявку",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"status\": \"in_progress\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/requests/req_placeholder",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "requests", ":id"],
-              "variable": [{ "key": "id", "value": "req_placeholder" }]
-            }
-          }
-        },
-        {
-          "name": "Завершить заявку",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/requests/req_placeholder/complete",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "requests", ":id", "complete"],
-              "variable": [{ "key": "id", "value": "req_placeholder" }]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "Погода",
-      "item": [
-        {
-          "name": "Погода по координатам",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/weather?latitude=55.7558&longitude=37.6173",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "weather"],
-              "query": [
-                { "key": "latitude", "value": "55.7558" },
-                { "key": "longitude", "value": "37.6173" }
-              ]
-            }
-          }
+          ]
         },
         {
           "name": "Погода для оборудования",
@@ -221,12 +200,503 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/weather/equipment/eq_placeholder",
+              "raw": "{{baseUrl}}/api/equipment/{{equipmentId}}/weather",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "weather", "equipment", ":id"],
-              "variable": [{ "key": "id", "value": "eq_placeholder" }]
+              "path": ["api", "equipment", ":id", "weather"],
+              "variable": [{ "key": "id", "value": "{{equipmentId}}" }]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Ожидаем 200 или 502 (погодный API недоступен)', () => {",
+                  "    pm.expect([200, 502]).to.include(pm.response.code);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Прогноз содержит equipmentId и массив days', () => {",
+                  "        pm.expect(body.data.equipmentId).to.eql(pm.collectionVariables.get('equipmentId'));",
+                  "        pm.expect(body.data).to.have.property('days').and.be.an('array');",
+                  "        pm.expect(body.data).to.have.property('windThresholdMs').and.be.a('number');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('502 имеет код WEATHER_API_UNAVAILABLE', () => {",
+                  "        pm.expect(body.error.code).to.eql('WEATHER_API_UNAVAILABLE');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Удалить оборудование",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/equipment/{{equipmentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "equipment", ":id"],
+              "variable": [{ "key": "id", "value": "{{equipmentId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 204', () => pm.expect(pm.response.code).to.eql(204));",
+                  "pm.test('Пустое тело', () => pm.expect(pm.response.text()).to.eql(''));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Оборудование — негативные сценарии",
+      "item": [
+        {
+          "name": "Некорректное тело (422)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"x\",\n  \"type\": \"inverter\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/equipment", "host": ["{{baseUrl}}"], "path": ["api", "equipment"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 422', () => pm.expect(pm.response.code).to.eql(422));",
+                  "pm.test('Код VALIDATION_ERROR и массив details', () => {",
+                  "    pm.expect(body.error.code).to.eql('VALIDATION_ERROR');",
+                  "    pm.expect(body.error).to.have.property('details').and.be.an('array').and.not.empty;",
+                  "    pm.expect(body.error).to.have.property('requestId');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Несуществующий идентификатор (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/equipment/{{fakeId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "equipment", ":id"],
+              "variable": [{ "key": "id", "value": "{{fakeId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 404', () => pm.expect(pm.response.code).to.eql(404));",
+                  "pm.test('Код NOT_FOUND', () => pm.expect(body.error.code).to.eql('NOT_FOUND'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Дубль серийного номера (409)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Дубль\",\n  \"type\": \"inverter\",\n  \"serialNumber\": \"SN-INV-001\",\n  \"location\": { \"lat\": 10, \"lon\": 20 }\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/equipment", "host": ["{{baseUrl}}"], "path": ["api", "equipment"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 409', () => pm.expect(pm.response.code).to.eql(409));",
+                  "pm.test('Код SERIAL_CONFLICT', () => pm.expect(body.error.code).to.eql('SERIAL_CONFLICT'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Заявки на обслуживание",
+      "item": [
+        {
+          "name": "Список заявок",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/requests?limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests"],
+              "query": [{ "key": "limit", "value": "20" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Тело содержит data[] и meta', () => {",
+                  "    pm.expect(body).to.have.property('data').and.be.an('array');",
+                  "    pm.expect(body).to.have.property('meta');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Создать заявку",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": \"{{equipmentId}}\",\n  \"title\": \"Плановое ТО инвертора\",\n  \"description\": \"Проверить охлаждение и кабельные соединения\",\n  \"priority\": \"high\",\n  \"plannedAt\": \"2026-10-05T09:00:00.000Z\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/requests", "host": ["{{baseUrl}}"], "path": ["api", "requests"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 201', () => pm.expect(pm.response.code).to.eql(201));",
+                  "pm.test('Созданная заявка содержит id и priority=high', () => {",
+                  "    pm.expect(body.data.id).to.be.a('string');",
+                  "    pm.expect(body.data.equipmentId).to.eql(pm.collectionVariables.get('equipmentId'));",
+                  "    pm.expect(body.data.priority).to.eql('high');",
+                  "    pm.expect(body.data.status).to.eql('new');",
+                  "});",
+                  "pm.collectionVariables.set('requestId', body.data.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Заявка по id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{requestId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id"],
+              "variable": [{ "key": "id", "value": "{{requestId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Вернулась та же заявка', () => {",
+                  "    pm.expect(body.data.id).to.eql(pm.collectionVariables.get('requestId'));",
+                  "    pm.expect(body.data.title).to.eql('Плановое ТО инвертора');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Обновить заявку",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"description\": \"Обновлённый план работ: добавить замену фильтра\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{requestId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id"],
+              "variable": [{ "key": "id", "value": "{{requestId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('description обновлена', () => {",
+                  "    pm.expect(body.data.description).to.include('замены фильтра');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Перевести в работу (new → in_progress)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"in_progress\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{requestId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id", "status"],
+              "variable": [{ "key": "id", "value": "{{requestId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Статус in_progress', () => pm.expect(body.data.status).to.eql('in_progress'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Завершить (in_progress → done)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"done\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{requestId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id", "status"],
+              "variable": [{ "key": "id", "value": "{{requestId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 200', () => pm.expect(pm.response.code).to.eql(200));",
+                  "pm.test('Статус done', () => pm.expect(body.data.status).to.eql('done'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Удалить заявку",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{requestId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id"],
+              "variable": [{ "key": "id", "value": "{{requestId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 204', () => pm.expect(pm.response.code).to.eql(204));",
+                  "pm.test('Пустое тело', () => pm.expect(pm.response.text()).to.eql(''));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Заявки — негативные сценарии",
+      "item": [
+        {
+          "name": "Заявка на несуществующее оборудование (404)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": \"{{fakeId}}\",\n  \"title\": \"Заявка на несуществующее оборудование\",\n  \"priority\": \"low\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/requests", "host": ["{{baseUrl}}"], "path": ["api", "requests"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 404', () => pm.expect(pm.response.code).to.eql(404));",
+                  "pm.test('Код NOT_FOUND', () => pm.expect(body.error.code).to.eql('NOT_FOUND'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Некорректное тело (422)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"equipmentId\": \"{{equipmentId}}\",\n  \"title\": \"x\",\n  \"priority\": \"unknown\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/requests", "host": ["{{baseUrl}}"], "path": ["api", "requests"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 422', () => pm.expect(pm.response.code).to.eql(422));",
+                  "pm.test('Код VALIDATION_ERROR и массив details', () => {",
+                  "    pm.expect(body.error.code).to.eql('VALIDATION_ERROR');",
+                  "    pm.expect(body.error.details).to.be.an('array').and.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Несуществующий идентификатор (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{fakeId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id"],
+              "variable": [{ "key": "id", "value": "{{fakeId}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 404', () => pm.expect(pm.response.code).to.eql(404));",
+                  "pm.test('Код NOT_FOUND', () => pm.expect(body.error.code).to.eql('NOT_FOUND'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Недопустимый переход статуса (409)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"new\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/api/requests/{{requestId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "requests", ":id", "status"],
+              "variable": [{ "key": "id", "value": "{{requestId}}" }]
+            },
+            "description": "Заявка уже переведена в done выше, переход done → new запрещён."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 409', () => pm.expect(pm.response.code).to.eql(409));",
+                  "pm.test('Код INVALID_STATUS_TRANSITION', () => pm.expect(body.error.code).to.eql('INVALID_STATUS_TRANSITION'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Rate limit",
+      "item": [
+        {
+          "name": "Превышение лимита частоты (429)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/equipment", "host": ["{{baseUrl}}"], "path": ["api", "equipment"] },
+            "description": "Pre-request исчерпывает лимит запросов (окно по умолчанию 100/15 мин), после чего сам запрос должен вернуть 429 RATE_LIMIT_EXCEEDED."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Исчерпываем rate-limit, чтобы следующий запрос гарантированно получил 429.",
+                  "const url = pm.collectionVariables.get('baseUrl') + '/api/health';",
+                  "const TOTAL = 105;",
+                  "let sent = 0;",
+                  "const burst = () => {",
+                  "    if (sent >= TOTAL) return;",
+                  "    sent++;",
+                  "    pm.sendRequest(url, () => burst());",
+                  "};",
+                  "burst();"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Статус 429', () => pm.expect(pm.response.code).to.eql(429));",
+                  "pm.test('Код RATE_LIMIT_EXCEEDED', () => {",
+                  "    pm.expect(body.error.code).to.eql('RATE_LIMIT_EXCEEDED');",
+                  "    pm.expect(body.error).to.have.property('requestId');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         }
       ]
     }

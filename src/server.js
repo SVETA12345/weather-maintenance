@@ -1,21 +1,23 @@
 import { createApp } from './app.js';
 import config from './config/index.js';
+import { logger } from './utils/logger.js';
 
 const app = createApp();
 
 const server = app.listen(config.port, () => {
-  console.log(`Server started on port ${config.port} (${config.env})`);
+    logger.info({ port: config.port, env: config.env }, 'server started');
 });
 
 /**
  * Плавное завершение работы сервера.
  */
 function shutdown(signal) {
-  console.log(`Received ${signal}; shutting down`);
-  server.close(() => {
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(1), 10_000).unref();
+    logger.info({ signal }, 'shutting down');
+    server.close(() => {
+        logger.info('server stopped');
+        process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10_000).unref();
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));

@@ -3,6 +3,7 @@ import { requestsRepository } from '../repositories/requestsRepository.js';
 import { NotFoundError } from '../errors/NotFoundError.js';
 import { ConflictError } from '../errors/ConflictError.js';
 import { paginate } from '../utils/pagination.js';
+import { getLog } from '../utils/context.js';
 
 export const equipmentService = {
     async list(query) {
@@ -28,22 +29,31 @@ export const equipmentService = {
 
     async create(data) {
         const existing = await equipmentRepository.findBySerial(data.serialNumber);
-        if (existing) throw new ConflictError('Серийный номер уже занят', 'SERIAL_CONFLICT');
-        return equipmentRepository.create(data);
+        if (existing) {
+            getLog().warn({ event: 'equipment_serial_conflict', serialNumber: data.serialNumber }, 'Серийный номер уже занят');
+            throw new ConflictError('Серийный номер уже занят', 'SERIAL_CONFLICT');
+        }
+        const created = await equipmentRepository.create(data);
+        getLog().info({ event: 'equipment_created', id: created.id }, 'Оборудование создано');
+        return created;
     },
 
     async update(id, patch) {
         await this.getById(id);
-        return equipmentRepository.update(id, patch);
+        const updated = await equipmentRepository.update(id, patch);
+        getLog().info({ event: 'equipment_updated', id }, 'Оборудование обновлено');
+        return updated;
     },
 
     async remove(id) {
         await this.getById(id);
         const open = await requestsRepository.findOpenByEquipmentId(id);
         if (open.length > 0) {
+            getLog().warn({ event: 'equipment_remove_blocked', id, openRequests: open.length }, 'Удаление заблокировано открытыми заявками');
             throw new ConflictError('Нельзя удалить оборудование с открытыми заявками', 'HAS_OPEN_REQUESTS');
         }
         await equipmentRepository.remove(id);
+        getLog().info({ event: 'equipment_removed', id }, 'Оборудование удалено');
     },
 
     async listRequests(equipmentId) {
