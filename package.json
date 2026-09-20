@@ -2,10 +2,19 @@
   "name": "weather-maintenance-api",
   "version": "1.0.0",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "transform": {},
+    "testMatch": ["**/tests/**/*.test.js"],
+    "setupFiles": ["<rootDir>/jest.setup.cjs"]
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -17,5 +26,9 @@
     "pino-http": "^10.3.0",
     "pino-pretty": "^11.3.0",
     "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.2.2"
   }
 }

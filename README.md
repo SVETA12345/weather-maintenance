@@ -29,6 +29,15 @@ npm start              # продакшен-запуск (JSON-логи)
 
 Сервер по умолчанию поднимается на `http://localhost:3000`. Проверка: `GET /api/health`.
 
+## Веб-страница управления заявками
+
+Простая страница `public/index.html` раздаётся тем же сервером и открывается в браузере: `http://localhost:3000/`. Она работает с API через `fetch` (тот же origin, CORS не нужен). Страницу также можно открыть как локальный файл (`file://`) — `Origin: null` разрешён CORS-конфигурацией:
+
+- **Список заявок** — таблица с фильтрами по статусу, приоритету и оборудованию, постраничная навигация.
+- **Форма создания** — выбор оборудования из `GET /api/equipment`, название, описание, приоритет, планируемая дата; создание через `POST /api/requests`.
+- **Смена статуса** — кнопки «В работу / Завершить / Отклонить» через `PATCH /api/requests/:id/status`.
+- Ошибки API (422 с деталями, 404, 409, 429) выводятся в блоке сообщений.
+
 ## Переменные окружения
 
 | Переменная              | По умолчанию                          | Описание                                          |
@@ -277,7 +286,7 @@ curl -X PATCH http://localhost:3000/api/requests/<id>/status \
 ## Безопасность
 
 - **Helmet** — базовые HTTP-заголовки безопасности.
-- **CORS** — только источники из `CORS_ORIGINS`. Запросы с неперечисленным `Origin` отклоняются (500 при origin-ошибке).
+- **CORS** — только источники из `CORS_ORIGINS`, плюс всегда разрешён адрес самого сервера (браузеры шлют `Origin`, равный своему хосту, даже на same-origin `POST`/`PATCH`), запросы без `Origin` (curl, Postman) и `Origin: null` (открытие страницы как файла `file://`). Запросы с неперечисленным `Origin` отклоняются (500 при origin-ошибке, источник пишется в лог `cors_blocked`).
 - **Rate limiting** (`express-rate-limit`) — на все `/api`, настраивается `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX`; ответ 429 в формате ошибки.
 - **Валидация входа** — все тела и query проходят Zod-схемы (`src/validators/`), неизвестные поля отбрасываются.
 - **Лимит тела** — `express.json({ limit: '100kb' })`.
@@ -294,6 +303,14 @@ curl -X PATCH http://localhost:3000/api/requests/<id>/status \
 weather-maintenance-api/
 ├── docs/
 │   └── postman/collection.json   # Postman-коллекция (эндпоинты + негативные сценарии, pm.test)
+├── public/
+│   └── index.html                # простая веб-страница: список заявок, фильтры, форма создания
+├── tests/
+│   ├── health.test.js            # health, 404, X-Request-Id
+│   ├── equipment.test.js         # CRUD оборудования, фильтры, 409/404/422, погода (fetch мокается)
+│   ├── requests.test.js          # CRUD заявок, переходы статусов, 409/404/422
+│   └── ratelimit.test.js         # 429 при превышении лимита (RATE_LIMIT_MAX=3)
+├── jest.setup.cjs                # env для тестов (production, log silent)
 ├── src/
 │   ├── api/
 │   │   ├── weatherClient.js      # HTTP-клиент Open-Meteo (таймаут, обработка статуса)
@@ -314,6 +331,23 @@ weather-maintenance-api/
 ├── package.json
 └── README.md
 ```
+
+## Автотесты (Jest + Supertest)
+
+Запуск: `npm test` (все 31 сценарий, `--runInBand`; требует Node с поддержкой `--experimental-vm-modules`).
+
+```bash
+npm test
+```
+
+Покрытие основных сценариев:
+
+- **Health / маршрутизация** — `GET /api/health`, 404 неизвестного маршрута, проброс и генерация `X-Request-Id`.
+- **Оборудование** — CRUD (201 с defaults и `Location`), пагинация и фильтры, 409 `SERIAL_CONFLICT`, 409 `HAS_OPEN_REQUESTS` (удаление с открытой заявкой), 404, 422 `VALIDATION_ERROR` с `details`. Прогноз `/weather` проверяется с замоканным `global.fetch` (без обращения к Open-Meteo).
+- **Заявки** — CRUD, неизменяемость `equipmentId` при PATCH, допустимые переходы статусов (`new → in_progress → done`, `new → rejected`), 409 `INVALID_STATUS_TRANSITION`, 404, 422.
+- **Rate limit** — отдельный файл переопределяет `RATE_LIMIT_MAX=3` до импорта приложения и проверяет 429 `RATE_LIMIT_EXCEEDED`.
+
+Между тестами in-memory хранилища очищаются через `reset()` (`tests/*.test.js`, `beforeEach`). Внешние погодные вызовы не выполняются.
 
 ## Postman
 
