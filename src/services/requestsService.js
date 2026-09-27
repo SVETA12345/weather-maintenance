@@ -3,8 +3,8 @@ import { equipmentRepository } from '../repositories/equipmentRepository.js';
 import { NotFoundError } from '../errors/NotFoundError.js';
 import { ConflictError } from '../errors/ConflictError.js';
 import { ValidationError } from '../errors/ValidationError.js';
-import { paginate } from '../utils/pagination.js';
 import { getLog } from '../utils/context.js';
+import { resolveOffset } from '../utils/paging.js';
 
 const TRANSITIONS = {
     new: ['in_progress', 'rejected'],
@@ -13,23 +13,20 @@ const TRANSITIONS = {
     rejected: [],
 };
 
-export const requestsService = {
-    async list(query) {
-        const all = await requestsRepository.findAll();
-        let filtered = all;
-        if (query.status) filtered = filtered.filter((r) => r.status === query.status);
-        if (query.priority) filtered = filtered.filter((r) => r.priority === query.priority);
-        if (query.equipmentId) filtered = filtered.filter((r) => r.equipmentId === query.equipmentId);
-        if (query.from) filtered = filtered.filter((r) => r.createdAt >= query.from);
-        if (query.to) filtered = filtered.filter((r) => r.createdAt <= query.to);
+// Автор в истории изменений: авторизации в сервисе нет, все изменения приходят через API.
+const HISTORY_AUTHOR = 'api';
 
-        if (query.sortBy) {
-            const dir = query.order === 'desc' ? -1 : 1;
-            filtered = [...filtered].sort((a, b) =>
-                a[query.sortBy] > b[query.sortBy] ? dir : a[query.sortBy] < b[query.sortBy] ? -dir : 0,
-            );
-        }
-        return paginate(filtered, query);
+const ASSIGNEE_REQUIRED_CODE = 'ASSIGNEE_REQUIRED';
+const NO_CREW_MESSAGE = 'Нельзя перевести заявку в in_progress без назначенных исполнителей';
+const NO_LAST_ASSIGNEE_MESSAGE = 'Нельзя снять последнего исполнителя с заявки в статусе in_progress';
+
+export const requestsService = {
+    async list({ page, limit, offset, ...filters }) {
+        const { rows, total } = await requestsRepository.findPage(filters, {
+            limit,
+            offset: resolveOffset({ page, limit, offset }),
+        });
+        return { data: rows, meta: { total, page, limit } };
     },
 
     async getById(id) {
@@ -63,9 +60,77 @@ export const requestsService = {
                 'INVALID_STATUS_TRANSITION',
             );
         }
-        const updated = await requestsRepository.update(id, { status });
+
+        if (status === 'in_progress' && current.assignees.length === 0) {
+            getLog().warn({ event: 'in_progress_without_assignees', id }, 'Перевод в in_progress без назначенных исполнителей');
+            throw new ConflictError(NO_CREW_MESSAGE, ASSIGNEE_REQUIRED_CODE);
+        }
+
+        const updated = await requestsRepository.setStatus(id, status, { author: HISTORY_AUTHOR });
         getLog().info({ event: 'request_status_changed', id, from: current.status, to: status }, 'Статус заявки изменён');
         return updated;
+    },
+
+    async history(id, { page, limit, offset } = {}) {
+        await this.getById(id);
+        const { rows, total } = await requestsRepository.findStatusHistory(id, {
+            limit,
+            offset: resolveOffset({ page, limit, offset }),
+        });
+        return { data: rows, meta: { total, page, limit } };
+    },
+
+    async assignCrew(id, assignees) {
+        await this.getById(id);
+
+        const technicianIds = assignees.map((a) => a.technicianId);
+        const existing = await requestsRepository.findExistingTechnicianIds(technicianIds);
+        const unknown = technicianIds.filter((technicianId) => !existing.includes(technicianId));
+        if (unknown.length > 0) {
+            throw new NotFoundError(`Специалист(ы) ${unknown.join(', ')}`);
+        }
+
+        // Правило бригады: ровно один специалист с ролью lead. Проверка выполняется
+        // внутри транзакции replaceAssignees — нарушение откатывает снятие прежних
+        // назначений и не оставляет заявку без исполнителей.
+        const validateCrew = (crew) => {
+            const leads = crew.filter((a) => a.role === 'lead');
+            if (leads.length !== 1) {
+                throw new ValidationError([
+                    {
+                        field: 'role',
+                        message: `в бригаде должен быть ровно один специалист с ролью lead, передано: ${leads.length}`,
+                    },
+                ]);
+            }
+        };
+
+        try {
+            return await requestsRepository.replaceAssignees(id, assignees, { validateCrew });
+        } catch (error) {
+            if (error instanceof ValidationError) {
+                getLog().warn({ event: 'crew_rule_violated', requestId: id }, 'Нарушено правило бригады: нужен ровно один lead');
+            }
+            throw error;
+        }
+    },
+
+    async removeAssignee(id, technicianId) {
+        const request = await this.getById(id);
+
+        const isLast =
+            request.status === 'in_progress' &&
+            request.assignees.length === 1 &&
+            request.assignees[0].technicianId === technicianId;
+        if (isLast) {
+            getLog().warn({ event: 'last_assignee_removed', requestId: id, technicianId }, 'Снятие последнего исполнителя с заявки в работе');
+            throw new ConflictError(NO_LAST_ASSIGNEE_MESSAGE, ASSIGNEE_REQUIRED_CODE);
+        }
+
+        const removed = await requestsRepository.removeAssignee(id, technicianId);
+        if (!removed) throw new NotFoundError('Назначение специалиста на заявку');
+
+        getLog().info({ event: 'assignee_removed', requestId: id, technicianId }, 'Специалист снят с заявки');
     },
 
     async remove(id) {

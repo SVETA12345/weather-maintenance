@@ -34,6 +34,7 @@ module.exports = {
         priority: PRIORITIES[i % PRIORITIES.length],
         status: STATUSES[i % STATUSES.length],
         planned_at: new Date(created.getTime() + 3 * 24 * 60 * 60 * 1000),
+        planned_labor_hours: 2 + (i % 5) * 1.5,
         created_at: created,
         updated_at: updated,
       });

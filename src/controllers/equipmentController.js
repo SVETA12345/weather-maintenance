@@ -1,6 +1,6 @@
 import { equipmentService } from '../services/equipmentService.js';
 import { weatherService } from '../api/weatherService.js';
-import { equipmentQuerySchema } from '../validators/querySchemas.js';
+import { equipmentQuerySchema, equipmentRequestsQuerySchema } from '../validators/querySchemas.js';
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -32,8 +32,9 @@ export const equipmentController = {
     }),
 
     listRequests: asyncHandler(async (req, res) => {
-        const items = await equipmentService.listRequests(req.params.id);
-        res.json({ data: items });
+        const query = equipmentRequestsQuerySchema.parse(req.validatedQuery ?? req.query);
+        const result = await equipmentService.listRequests(req.params.id, query);
+        res.json(result);
     }),
 
     weather: asyncHandler(async (req, res, next) => {

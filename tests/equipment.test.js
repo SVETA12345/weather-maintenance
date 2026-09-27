@@ -1,7 +1,6 @@
 import request from 'supertest';
 import { createApp } from '../src/app.js';
-import { equipmentRepository } from '../src/repositories/equipmentRepository.js';
-import { requestsRepository } from '../src/repositories/requestsRepository.js';
+import { resetTestDb, closeTestDb, createTechnician, createPassport, getSiteIdOfEquipment, countRows } from './helpers/db.js';
 
 const app = createApp();
 
@@ -33,9 +32,10 @@ const openWeather = () => ({
 });
 
 beforeEach(async () => {
-    await equipmentRepository.reset();
-    await requestsRepository.reset();
+    await resetTestDb();
 });
+
+afterAll(closeTestDb);
 
 describe('Equipment API — основные сценарии', () => {
     test('POST /api/equipment создаёт оборудование (201, defaults, Location)', async () => {
@@ -57,6 +57,65 @@ describe('Equipment API — основные сценарии', () => {
         const res = await request(app).get('/api/equipment?page=1&limit=20').expect(200);
         expect(res.body.data).toHaveLength(2);
         expect(res.body.meta).toEqual({ total: 2, page: 1, limit: 20 });
+    });
+
+    test('сортировка по sortBy выполняется в базе', async () => {
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-A-001', name: 'Янтарь' });
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-B-002', name: 'Буран' });
+
+        const asc = await request(app).get('/api/equipment?sortBy=name').expect(200);
+        expect(asc.body.data.map((e) => e.name)).toEqual(['Буран', 'Янтарь']);
+
+        const desc = await request(app).get('/api/equipment?sortBy=name&order=desc').expect(200);
+        expect(desc.body.data.map((e) => e.name)).toEqual(['Янтарь', 'Буран']);
+    });
+
+    test('фильтры status и type применяются в базе, total считает отфильтрованные строки', async () => {
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-F-000', type: 'turbine' });
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-F-001', type: 'sensor' });
+
+        const byType = await request(app).get('/api/equipment?type=sensor').expect(200);
+        expect(byType.body.data).toHaveLength(1);
+        expect(byType.body.meta.total).toBe(1);
+
+        const byStatus = await request(app).get('/api/equipment?status=operational').expect(200);
+        expect(byStatus.body.data).toHaveLength(2);
+        expect(byStatus.body.meta.total).toBe(2);
+
+        const missing = await request(app).get('/api/equipment?type=turbine&status=fault').expect(200);
+        expect(missing.body.data).toEqual([]);
+        expect(missing.body.meta.total).toBe(0);
+    });
+
+    test('limit и offset ограничены сверху, выход за диапазон — 400 INVALID_PAGINATION', async () => {
+        const tooBigLimit = await request(app).get('/api/equipment?limit=101').expect(400);
+        expect(tooBigLimit.body.error.code).toBe('INVALID_PAGINATION');
+        expect(tooBigLimit.body.error.details.map((d) => d.field)).toEqual(['limit']);
+
+        const tooBigOffset = await request(app).get('/api/equipment?offset=10001').expect(400);
+        expect(tooBigOffset.body.error.details.map((d) => d.field)).toEqual(['offset']);
+
+        const notANumber = await request(app).get('/api/equipment?limit=abc').expect(400);
+        expect(notANumber.body.error.details.map((d) => d.field)).toEqual(['limit']);
+
+        // границы допустимы
+        await request(app).get('/api/equipment?limit=100&offset=10000').expect(200);
+
+        // остальные нарушения схемы остаются 422
+        await request(app).get('/api/equipment?status=nope').expect(422);
+    });
+
+    test('явный offset пропускает строки так же, как page', async () => {
+        const first = await createEquipment({ ...validEquipment, serialNumber: 'SN-O-1', name: 'Альфа' });
+        const second = await createEquipment({ ...validEquipment, serialNumber: 'SN-O-2', name: 'Бета' });
+        const third = await createEquipment({ ...validEquipment, serialNumber: 'SN-O-3', name: 'Веста' });
+
+        const byPage = await request(app).get('/api/equipment?page=2&limit=1&sortBy=name').expect(200);
+        const byOffset = await request(app).get('/api/equipment?offset=1&limit=1&sortBy=name').expect(200);
+        expect(byPage.body.data.map((e) => e.id)).toEqual([second.id]);
+        expect(byOffset.body.data.map((e) => e.id)).toEqual(byPage.body.data.map((e) => e.id));
+        expect(byOffset.body.meta.total).toBe(3);
+        expect([first.id, third.id]).toHaveLength(2);
     });
 
     test('GET /api/equipment/:id возвращает оборудование', async () => {
@@ -128,16 +187,95 @@ describe('Equipment API — основные сценарии', () => {
         expect(res.body.error.code).toBe('HAS_OPEN_REQUESTS');
     });
 
-    test('GET /api/equipment/:id/requests возвращает заявки оборудования', async () => {
+    test('отклонённая заявка не блокирует удаление: закрытым считается и done, и rejected', async () => {
         const created = await createEquipment();
-        await request(app)
+        const rejected = await request(app)
             .post('/api/requests')
-            .send({ equipmentId: created.id, title: 'ТО по графику', priority: 'medium' })
+            .send({ equipmentId: created.id, title: 'Отклонённая заявка', priority: 'low' })
             .expect(201);
+        const requestId = rejected.body.data.id;
+        await request(app).patch(`/api/requests/${requestId}/status`).send({ status: 'rejected' }).expect(200);
 
-        const res = await request(app).get(`/api/equipment/${created.id}/requests`).expect(200);
-        expect(res.body.data).toHaveLength(1);
+        await request(app).delete(`/api/equipment/${created.id}`).expect(204);
+
+        expect(await countRows('maintenance_requests', { id: requestId })).toBe(0);
+    });
+
+    test('заявка в работе блокирует удаление оборудования', async () => {
+        const created = await createEquipment();
+        const technician = await createTechnician();
+        const open = await request(app)
+            .post('/api/requests')
+            .send({ equipmentId: created.id, title: 'Заявка в работе', priority: 'low' })
+            .expect(201);
+        const requestId = open.body.data.id;
+
+        await request(app)
+            .post(`/api/requests/${requestId}/assignees`)
+            .send([{ technicianId: technician.id, role: 'lead' }])
+            .expect(201);
+        await request(app).patch(`/api/requests/${requestId}/status`).send({ status: 'in_progress' }).expect(200);
+
+        const res = await request(app).delete(`/api/equipment/${created.id}`).expect(409);
+        expect(res.body.error.code).toBe('HAS_OPEN_REQUESTS');
+    });
+
+    test('DELETE с закрытой заявкой каскадно удаляет заявку, историю и паспорт', async () => {
+        const created = await createEquipment();
+        const technician = await createTechnician();
+        await createPassport(created.id);
+
+        const open = await request(app)
+            .post('/api/requests')
+            .send({ equipmentId: created.id, title: 'Закрытая заявка', priority: 'low' })
+            .expect(201);
+        const requestId = open.body.data.id;
+
+        await request(app)
+            .post(`/api/requests/${requestId}/assignees`)
+            .send([{ technicianId: technician.id, role: 'lead' }])
+            .expect(201);
+        await request(app).patch(`/api/requests/${requestId}/status`).send({ status: 'in_progress' }).expect(200);
+        await request(app).patch(`/api/requests/${requestId}/status`).send({ status: 'done' }).expect(200);
+
+        await request(app).delete(`/api/equipment/${created.id}`).expect(204);
+
+        await request(app).get(`/api/requests/${requestId}`).expect(404);
+        expect(await countRows('maintenance_requests', { id: requestId })).toBe(0);
+        expect(await countRows('request_status_history', { request_id: requestId })).toBe(0);
+        expect(await countRows('request_assignees', { request_id: requestId })).toBe(0);
+        expect(await countRows('equipment_passports', { equipment_id: created.id })).toBe(0);
+    });
+
+    test('специалисты и площадка переживают удаление оборудования', async () => {
+        const created = await createEquipment();
+        const siteId = await getSiteIdOfEquipment(created.id);
+        const technician = await createTechnician();
+
+        await request(app).delete(`/api/equipment/${created.id}`).expect(204);
+
+        expect(await countRows('technicians', { id: technician.id })).toBe(1);
+        expect(await countRows('sites', { id: siteId })).toBe(1);
+    });
+
+    test('GET /api/equipment/:id/requests возвращает заявки оборудования с пагинацией', async () => {
+        const created = await createEquipment();
+        for (let i = 1; i <= 3; i += 1) {
+            await request(app)
+                .post('/api/requests')
+                .send({ equipmentId: created.id, title: `ТО по графику ${i}`, priority: 'medium' })
+                .expect(201);
+        }
+
+        const res = await request(app).get(`/api/equipment/${created.id}/requests?page=1&limit=2`).expect(200);
+        expect(res.body.data).toHaveLength(2);
         expect(res.body.data[0].equipmentId).toBe(created.id);
+        expect(res.body.meta).toEqual({ total: 3, page: 1, limit: 2 });
+
+        const unknown = await request(app)
+            .get('/api/equipment/00000000-0000-4000-8000-000000000000/requests')
+            .expect(404);
+        expect(unknown.body.error.code).toBe('NOT_FOUND');
     });
 
     test('Фильтрация списка по type', async () => {

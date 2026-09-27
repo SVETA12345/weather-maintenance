@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:db:drop": "node scripts/drop-test-db.mjs"
   },
   "jest": {
     "testEnvironment": "node",
@@ -16,6 +17,7 @@
     "testMatch": [
       "**/tests/**/*.test.js"
     ],
+    "globalSetup": "<rootDir>/tests/globalSetup.js",
     "setupFiles": [
       "<rootDir>/jest.setup.cjs"
     ]

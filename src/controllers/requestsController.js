@@ -1,5 +1,5 @@
 import { requestsService } from '../services/requestsService.js';
-import { requestsQuerySchema } from '../validators/querySchemas.js';
+import { requestsQuerySchema, historyQuerySchema } from '../validators/querySchemas.js';
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -16,7 +16,6 @@ export const requestsController = {
     }),
 
     create: asyncHandler(async (req, res) => {
-        console.log('req', req)
         const created = await requestsService.create(req.body);
         res.status(201).location(`/api/requests/${created.id}`).json({ data: created });
     }),
@@ -29,6 +28,22 @@ export const requestsController = {
     changeStatus: asyncHandler(async (req, res) => {
         const updated = await requestsService.changeStatus(req.params.id, req.body.status);
         res.json({ data: updated });
+    }),
+
+    history: asyncHandler(async (req, res) => {
+        const query = historyQuerySchema.parse(req.validatedQuery ?? req.query);
+        const result = await requestsService.history(req.params.id, query);
+        res.json(result);
+    }),
+
+    assignCrew: asyncHandler(async (req, res) => {
+        const assignees = await requestsService.assignCrew(req.params.id, req.body);
+        res.status(201).json({ data: { requestId: req.params.id, assignees } });
+    }),
+
+    removeAssignee: asyncHandler(async (req, res) => {
+        await requestsService.removeAssignee(req.params.id, req.params.userId);
+        res.status(204).end();
     }),
 
     remove: asyncHandler(async (req, res) => {
