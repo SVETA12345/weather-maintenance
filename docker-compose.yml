@@ -39,7 +39,7 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-maintenance}
-      DB_USER: ${DB_USER:-postgres}
+      DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
     depends_on:
       db:
