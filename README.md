@@ -302,6 +302,8 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 
 ### Таблицы и ассоциации
 
+![ER-диаграмма](er_diagramma.png)
+
 Схема создаётся миграциями (`src/migrations`), ассоциации описаны явно в
 `src/models/index.js`:
 
@@ -671,6 +673,7 @@ curl "http://localhost:3000/api/reports/equipment-load?page=1&limit=20&minReques
 
 ```
 weather-maintenance-api/
+├── er_diagramma.png               # ER-диаграмма схемы БД (раздел «Модель данных»)
 ├── docker-compose.yml             # сервис api + PostgreSQL, том pgdata, healthcheck-и
 ├── Dockerfile                     # образ приложения (только production-зависимости)
 ├── .env                           # локальные параметры (создаётся из .env.example)
