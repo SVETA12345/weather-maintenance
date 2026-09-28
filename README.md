@@ -359,7 +359,7 @@ Node: `ILIKE` по `equipment.name` и `equipment.serial_number` с услови
 
 **Назначение:** ускорить фильтрацию заявок по статусу — самый частый запрос в списке (`GET /api/requests?status=in_progress`).
 
-**Миграция:** `src/migrations/20260928-add-index-maintenance-requests-status.cjs`
+**Миграция:** `src/migrations/20260927224325-add-index-maintenance-requests-status.cjs`
 
 ```js
 await queryInterface.addIndex("maintenance_requests", ["status"], {
@@ -408,7 +408,7 @@ SELECT * FROM maintenance_requests WHERE status = 'in_progress';
 
 **План:**
 
-```
+```text
 Seq Scan on maintenance_requests
   (cost=0.00..250.00 rows=500 width=222)
   (actual time=0.015..12.500 rows=504 loops=1)
@@ -426,30 +426,27 @@ Execution Time: 12.700 ms
 
 **План:**
 
-````
+```text
 Index Scan using idx_maintenance_requests_status on maintenance_requests
   (cost=0.29..136.30 rows=504 width=222)
   (actual time=0.064..0.533 rows=504 loops=1)
   Index Cond: (status = 'in_progress'::enum_maintenance_requests_status)
 Planning Time: 1.406 ms
 Execution Time: 0.786 ms
-
+```
 
 ### Вывод
 
 Индекс `idx_maintenance_requests_status` заменил полное сканирование таблицы (`Seq Scan`) на поиск по индексу (`Index Scan`). Время выполнения запроса сократилось примерно в **16 раз** на нагрузочной БД из 10 000 строк.
 
-
-
-
 ## Схема переходов статусов заявки
 
-| Текущий     | Допустимые след. состояния   |
-| ----------- | ---------------------------- |
-| `new`       | `in_progress`, `rejected`    |
-| `in_progress`| `done`, `rejected`          |
-| `done`      | — (терминальное)             |
-| `rejected`  | — (терминальное)             |
+| Текущий       | Допустимые след. состояния |
+| ------------- | -------------------------- |
+| `new`         | `in_progress`, `rejected`  |
+| `in_progress` | `done`, `rejected`         |
+| `done`        | — (терминальное)           |
+| `rejected`    | — (терминальное)           |
 
 Любой другой переход возвращает `409 INVALID_STATUS_TRANSITION`. Переход в
 `in_progress` дополнительно требует ненулевую бригаду, иначе `409 ASSIGNEE_REQUIRED`.
@@ -475,15 +472,16 @@ Execution Time: 0.786 ms
 ```jsonc
 {
   "error": {
-    "code": "VALIDATION_ERROR",   // машинный код (см. таблицу)
+    "code": "VALIDATION_ERROR", // машинный код (см. таблицу)
     "message": "Некорректные данные запроса",
-    "details": [                  // только для 422: список проблемных полей
-      { "field": "name", "message": "...", }
+    "details": [
+      // только для 422: список проблемных полей
+      { "field": "name", "message": "..." },
     ],
-    "requestId": "uuid"           // совпадает с заголовком X-Request-Id
-  }
+    "requestId": "uuid", // совпадает с заголовком X-Request-Id
+  },
 }
-````
+```
 
 | Код                         | HTTP | Когда                                                                                        |
 | --------------------------- | ---- | -------------------------------------------------------------------------------------------- |
