@@ -60,6 +60,8 @@ export const equipmentQuerySchema = withOffsetCeiling(
         ...pagination,
         status: z.enum(['operational', 'maintenance', 'fault', 'decommissioned']).optional(),
         type: z.enum(['turbine', 'inverter', 'sensor', 'substation']).optional(),
+        // Поиск по тексту: имя или серийный номер, регистр не важен.
+        search: z.string().trim().min(1, 'search не должен быть пустым').max(100, 'search не может превышать 100 символов').optional(),
     }),
 );
 

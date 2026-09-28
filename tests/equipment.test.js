@@ -118,6 +118,75 @@ describe('Equipment API — основные сценарии', () => {
         expect([first.id, third.id]).toHaveLength(2);
     });
 
+    test('search ищет по имени и серийному номеру без учёта регистра', async () => {
+        const turbine = await createEquipment({
+            ...validEquipment,
+            serialNumber: 'SN-TRB-900',
+            name: 'Ветроустановка Север',
+        });
+        const inverter = await createEquipment({
+            ...validEquipment,
+            serialNumber: 'sn-inv-777',
+            name: 'Сетевой инвертор Юг',
+        });
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-SEN-111', name: 'Датчик ветра' });
+
+        const byName = await request(app).get('/api/equipment?search=север').expect(200);
+        expect(byName.body.data.map((e) => e.id)).toEqual([turbine.id]);
+        expect(byName.body.meta.total).toBe(1);
+
+        // регистр не важен и для кириллицы, и для латиницы
+        const upper = await request(app).get('/api/equipment?search=СЕТЕВОЙ').expect(200);
+        expect(upper.body.data.map((e) => e.id)).toEqual([inverter.id]);
+
+        // частичное совпадение в середине слова
+        const partial = await request(app).get('/api/equipment?search=инвер').expect(200);
+        expect(partial.body.data.map((e) => e.id)).toEqual([inverter.id]);
+
+        // серийный номер ищется так же
+        const bySerial = await request(app).get('/api/equipment?search=SN-TRB-900').expect(200);
+        expect(bySerial.body.data.map((e) => e.id)).toEqual([turbine.id]);
+
+        const none = await request(app).get('/api/equipment?search=несуществующее').expect(200);
+        expect(none.body.data).toEqual([]);
+        expect(none.body.meta.total).toBe(0);
+    });
+
+    test('search комбинируется с фильтрами, сортировкой и пагинацией', async () => {
+        const first = await createEquipment({ ...validEquipment, serialNumber: 'SN-S-1', name: 'Турбина Альфа', type: 'turbine' });
+        const second = await createEquipment({ ...validEquipment, serialNumber: 'SN-S-2', name: 'Турбина Бета', type: 'turbine' });
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-S-3', name: 'Инвертор Гамма', type: 'inverter' });
+
+        const filtered = await request(app).get('/api/equipment?search=турбина&type=turbine&sortBy=name').expect(200);
+        expect(filtered.body.data.map((e) => e.id)).toEqual([first.id, second.id]);
+        expect(filtered.body.meta.total).toBe(2);
+
+        const page = await request(app).get('/api/equipment?search=турбина&type=turbine&sortBy=name&limit=1&page=2').expect(200);
+        expect(page.body.data.map((e) => e.id)).toEqual([second.id]);
+        expect(page.body.meta).toEqual({ total: 2, page: 2, limit: 1 });
+
+        // фильтр, отсекающий найденное, даёт пустой результат
+        const empty = await request(app).get('/api/equipment?search=турбина&type=inverter').expect(200);
+        expect(empty.body.data).toEqual([]);
+        expect(empty.body.meta.total).toBe(0);
+    });
+
+    test('спецсимволы в search экранируются и не превращаются в шаблон', async () => {
+        await createEquipment({ ...validEquipment, serialNumber: 'SN-P-1', name: 'Турбина сто процент' });
+
+        const percent = await request(app).get('/api/equipment?search=%25').expect(200);
+        expect(percent.body.data).toEqual([]);
+
+        const underscore = await request(app).get('/api/equipment?search=_').expect(200);
+        expect(underscore.body.data).toEqual([]);
+
+        const wildcardInWord = await request(app).get('/api/equipment?search=процент').expect(200);
+        expect(wildcardInWord.body.data).toHaveLength(1);
+
+        await request(app).get('/api/equipment?search=').expect(422);
+        await request(app).get(`/api/equipment?search=${'a'.repeat(101)}`).expect(422);
+    });
+
     test('GET /api/equipment/:id возвращает оборудование', async () => {
         const created = await createEquipment();
         const res = await request(app).get(`/api/equipment/${created.id}`).expect(200);

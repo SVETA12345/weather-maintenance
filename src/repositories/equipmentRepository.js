@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Op } from 'sequelize';
 import { models, sequelize } from '../models/sequelize.js';
 import { ValidationError } from '../errors/ValidationError.js';
 
@@ -73,10 +74,24 @@ const SORT_COLUMNS = {
     updatedAt: 'updated_at',
 };
 
-function buildWhere({ status, type } = {}) {
+const SEARCH_COLUMNS = ['name', 'serial_number'];
+
+// Спецсимволы LIKE экранируются, иначе пользовательский ввод вида `%` или `_`
+// превращался бы в шаблон, совпадающий с любой строкой.
+function escapeLike(value) {
+    return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+function buildWhere({ status, type, search } = {}) {
     const where = {};
     if (status) where.status = status;
     if (type) where.type = type;
+    if (search) {
+        const pattern = `%${escapeLike(search)}%`;
+        // ILIKE, а не LOWER(...) LIKE: так GIN-индекс pg_trgm по исходной колонке
+        // действительно используется планировщиком.
+        where[Op.or] = SEARCH_COLUMNS.map((column) => ({ [column]: { [Op.iLike]: pattern } }));
+    }
     return where;
 }
 

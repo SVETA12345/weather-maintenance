@@ -75,6 +75,10 @@ docker compose restart api
 - `src/migrations/20260927091048-migrate-from-json.cjs` переносит данные Кейса 2
   из `docs/postman/collection.json` (площадки, оборудование, заявки, история
   статусов) в транзакции; откат удаляет именно перенесённые записи.
+- `src/migrations/20260927170000-equipment-text-search.cjs` включает `pg_trgm` и
+  создаёт GIN-индексы `gin_trgm_ops` по `equipment.name` и `equipment.serial_number`
+  для поиска `GET /equipment?search=`. Откат удаляет индексы и снимает расширение,
+  если после отката других индексов на `gin_trgm_ops` в схеме не осталось.
 - Сиды `src/seeders` дают наполнение, достаточное для демонстрации всех связей и
   обоих отчётов: 2 площадки, 6 единиц оборудования (с паспортами), 5 специалистов,
   20 заявок, распределённых по всем четырём статусам, плюс назначения бригад и
@@ -93,29 +97,28 @@ docker compose restart api
 - Смены статуса, назначения исполнителей, сводок и отчётов на странице нет — они доступны только через API.
 - Ошибки API (422 с деталями, 404, 409, 429) выводятся в блоке сообщений.
 
-
 ## Переменные окружения
 
-| Переменная              | По умолчанию                          | Описание                                          |
-| ----------------------- | ------------------------------------- | ------------------------------------------------- |
-| `NODE_ENV`              | `development`                         | Окружение (`production` выключает pino-pretty)    |
-| `PORT`                  | `3000`                                | Порт HTTP-сервера                                 |
-| `LOG_LEVEL`             | `info`                                | Уровень логирования pino                          |
-| `CORS_ORIGINS`          | (пусто)                               | Разрешённые источники CORS (через запятую)        |
-| `RATE_LIMIT_WINDOW_MS`  | `900000` (15 мин)                     | Окно ограничения частоты запросов                 |
-| `RATE_LIMIT_MAX`        | `100`                                 | Максимум запросов за окно                         |
-| `WEATHER_API_URL`       | `https://api.open-meteo.com/v1/forecast` | Базовый URL прогноза Open-Meteo                |
-| `GEOCODING_API_URL`     | `https://geocoding-api.open-meteo.com/v1/search` | URL геокодинга Open-Meteo   |
-| `REQUEST_TIMEOUT_MS`    | `5000`                                | Таймаут запроса к погодному API (мс)              |
-| `WIND_THRESHOLD_MS`     | `8`                                   | Порог ветра (м/с) для пригодности наружных работ  |
-| `WEATHER_MAX_CONCURRENT`| `4`                                   | Максимум одновременных запросов к Open-Meteo      |
-| `REPORTS_DIR`           | `./reports`                           | Зарезервировано (пока не используется кодом)      |
-| `DB_HOST`               | `localhost`                           | Хост PostgreSQL                                   |
-| `DB_PORT`               | `5432`                                | Порт PostgreSQL                                   |
-| `DB_NAME`               | `maintenance`                         | Рабочая база                                      |
-| `DB_USER` / `DB_PASSWORD`| —                                    | Учётные данные PostgreSQL                         |
-| `DB_POOL_MAX`           | `10`                                  | Зарезервировано (пул Sequelize пока не настраивается кодом) |
-| `TEST_DB_NAME`          | `${DB_NAME}_test`                     | База автотестов (имя обязано содержать `test`)    |
+| Переменная                | По умолчанию                                     | Описание                                                    |
+| ------------------------- | ------------------------------------------------ | ----------------------------------------------------------- |
+| `NODE_ENV`                | `development`                                    | Окружение (`production` выключает pino-pretty)              |
+| `PORT`                    | `3000`                                           | Порт HTTP-сервера                                           |
+| `LOG_LEVEL`               | `info`                                           | Уровень логирования pino                                    |
+| `CORS_ORIGINS`            | (пусто)                                          | Разрешённые источники CORS (через запятую)                  |
+| `RATE_LIMIT_WINDOW_MS`    | `900000` (15 мин)                                | Окно ограничения частоты запросов                           |
+| `RATE_LIMIT_MAX`          | `100`                                            | Максимум запросов за окно                                   |
+| `WEATHER_API_URL`         | `https://api.open-meteo.com/v1/forecast`         | Базовый URL прогноза Open-Meteo                             |
+| `GEOCODING_API_URL`       | `https://geocoding-api.open-meteo.com/v1/search` | URL геокодинга Open-Meteo                                   |
+| `REQUEST_TIMEOUT_MS`      | `5000`                                           | Таймаут запроса к погодному API (мс)                        |
+| `WIND_THRESHOLD_MS`       | `8`                                              | Порог ветра (м/с) для пригодности наружных работ            |
+| `WEATHER_MAX_CONCURRENT`  | `4`                                              | Максимум одновременных запросов к Open-Meteo                |
+| `REPORTS_DIR`             | `./reports`                                      | Зарезервировано (пока не используется кодом)                |
+| `DB_HOST`                 | `localhost`                                      | Хост PostgreSQL                                             |
+| `DB_PORT`                 | `5432`                                           | Порт PostgreSQL                                             |
+| `DB_NAME`                 | `maintenance`                                    | Рабочая база                                                |
+| `DB_USER` / `DB_PASSWORD` | —                                                | Учётные данные PostgreSQL                                   |
+| `DB_POOL_MAX`             | `10`                                             | Зарезервировано (пул Sequelize пока не настраивается кодом) |
+| `TEST_DB_NAME`            | `${DB_NAME}_test`                                | База автотестов (имя обязано содержать `test`)              |
 
 Параметры подключения (`host`, `port`, `database`, `user`, `password`) читаются
 из окружения в `src/config/sequelize.config.cjs` и передаются в `new Sequelize(...)`
@@ -136,41 +139,47 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 
 ### Health
 
-| Метод | Путь        | Описание             | Коды ответа |
-| ----- | ----------- | -------------------- | ----------- |
-| GET   | `/health`   | Статус сервиса       | 200         |
+| Метод | Путь      | Описание       | Коды ответа |
+| ----- | --------- | -------------- | ----------- |
+| GET   | `/health` | Статус сервиса | 200         |
 
 ### Оборудование
 
-| Метод  | Путь                          | Описание                              | Коды ответа          |
-| ------ | ----------------------------- | ------------------------------------- | -------------------- |
-| GET    | `/equipment`                  | Список с пагинацией и фильтрами       | 200, 400, 422        |
-| POST   | `/equipment`                  | Создать оборудование                  | 201, 409, 422        |
-| GET    | `/equipment/:id`              | Получить оборудование                 | 200, 404             |
-| PATCH  | `/equipment/:id`              | Обновить оборудование                 | 200, 404             |
-| DELETE | `/equipment/:id`              | Удалить (запрещено с открытыми заявками) | 204, 404, 409     |
-| GET    | `/equipment/:id/requests`     | Заявки оборудования с пагинацией      | 200, 400, 404, 422   |
-| GET    | `/equipment/:id/weather`      | Прогноз погоды в точке оборудования   | 200, 404, 502        |
+| Метод  | Путь                      | Описание                                 | Коды ответа        |
+| ------ | ------------------------- | ---------------------------------------- | ------------------ |
+| GET    | `/equipment`              | Список с пагинацией и фильтрами          | 200, 400, 422      |
+| POST   | `/equipment`              | Создать оборудование                     | 201, 409, 422      |
+| GET    | `/equipment/:id`          | Получить оборудование                    | 200, 404           |
+| PATCH  | `/equipment/:id`          | Обновить оборудование                    | 200, 404           |
+| DELETE | `/equipment/:id`          | Удалить (запрещено с открытыми заявками) | 204, 404, 409      |
+| GET    | `/equipment/:id/requests` | Заявки оборудования с пагинацией         | 200, 400, 404, 422 |
+| GET    | `/equipment/:id/weather`  | Прогноз погоды в точке оборудования      | 200, 404, 502      |
 
 Параметры `GET /equipment`: `page` (1), `limit` (20, 1–100), `offset` (0–10000), `sortBy`,
 `order` (`asc|desc`), `status` (`operational|maintenance|fault|decommissioned`),
-`type` (`turbine|inverter|sensor|substation`).
+`type` (`turbine|inverter|sensor|substation`), `search` (1–100 символов).
 Параметры `GET /equipment/:id/requests`: `page`, `limit`, `offset`.
 Допустимые `sortBy`: `name`, `type`, `status`, `serialNumber`, `installedAt`, `createdAt`, `updatedAt`.
 
+`search` ищет подстроку без учёта регистра одновременно в `name` и `serialNumber`
+(`ILIKE`), в том числе в середине слова. Символы `%`, `_` и `\` из пользовательского
+ввода экранируются и трактуются как обычные символы, поэтому `search=%` не превращается
+в шаблон «всё подряд». Пустая строка и длиннее 100 символов — `422 VALIDATION_ERROR`.
+`search` суммируется с `status`, `type`, `sortBy` и пагинацией.
+
 ### Заявки на обслуживание
 
-| Метод  | Путь                              | Описание                    | Коды ответа              |
-| ------ | --------------------------------- | --------------------------- | ------------------------ |
-| GET    | `/requests`                       | Список с фильтрами          | 200, 400, 422            |
-| POST   | `/requests`                       | Создать заявку              | 201, 404, 422            |
-| GET    | `/requests/:id`                   | Получить заявку             | 200, 404                 |
-| PATCH  | `/requests/:id`                   | Обновить заявку             | 200, 404                 |
-| PATCH  | `/requests/:id/status`            | Сменить статус              | 200, 404, 409            |
-| DELETE | `/requests/:id`                   | Удалить заявку              | 204, 404                 |
-| GET    | `/requests/:id/history`           | История смен статуса        | 200, 400, 404, 422      |
-| POST   | `/requests/:id/assignees`         | Назначить бригаду (заменяет прежнюю) | 201, 404, 422       |
-| DELETE | `/requests/:id/assignees/:userId` | Снять исполнителя           | 204, 404, 409            |
+| Метод  | Путь                              | Описание                             | Коды ответа        |
+| ------ | --------------------------------- | ------------------------------------ | ------------------ |
+| GET    | `/requests`                       | Список с фильтрами                   | 200, 400, 422      |
+| POST   | `/requests`                       | Создать заявку                       | 201, 404, 422      |
+| GET    | `/requests/:id`                   | Получить заявку                      | 200, 404           |
+| PATCH  | `/requests/:id`                   | Обновить заявку                      | 200, 404           |
+| PATCH  | `/requests/:id/status`            | Сменить статус                       | 200, 404, 409      |
+| DELETE | `/requests/:id`                   | Удалить заявку                       | 204, 404           |
+| GET    | `/requests/:id/history`           | История смен статуса                 | 200, 400, 404, 422 |
+| POST   | `/requests/:id/assignees`         | Назначить бригаду (заменяет прежнюю) | 201, 404, 422      |
+| DELETE | `/requests/:id/assignees/:userId` | Снять исполнителя                    | 204, 404, 409      |
 
 Параметры `GET /requests`: `page`, `limit` (1–100), `offset` (0–10000), `sortBy`, `order`,
 `status` (`new|in_progress|done|rejected`), `priority` (`low|medium|high|critical`),
@@ -196,15 +205,15 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 
 ### Площадки
 
-| Метод | Путь                  | Описание                                        | Коды ответа |
-| ----- | --------------------- | ----------------------------------------------- | ----------- |
-| GET   | `/sites/:id/summary`  | Сводка по заявкам оборудования площадки          | 200, 404    |
+| Метод | Путь                 | Описание                                | Коды ответа |
+| ----- | -------------------- | --------------------------------------- | ----------- |
+| GET   | `/sites/:id/summary` | Сводка по заявкам оборудования площадки | 200, 404    |
 
 ### Отчёты
 
-| Метод | Путь                     | Описание                                    | Коды ответа |
-| ----- | ------------------------ | ------------------------------------------- | ----------- |
-| GET   | `/reports/equipment-load` | Нагрузка на оборудование по заявкам         | 200, 400, 422 |
+| Метод | Путь                      | Описание                            | Коды ответа   |
+| ----- | ------------------------- | ----------------------------------- | ------------- |
+| GET   | `/reports/equipment-load` | Нагрузка на оборудование по заявкам | 200, 400, 422 |
 
 Параметры `GET /reports/equipment-load`: `page` (1), `limit` (20, 1–100),
 `offset` (0–10000), `sortBy`, `order` (`asc|desc`), `from`, `to`
@@ -220,24 +229,25 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 
 ```jsonc
 {
-  "id": "4f9a...uuid",              // создаётся сервером
+  "id": "4f9a...uuid", // создаётся сервером
   "name": "Сетевой инвертор NS-12", // 3–100 символов
-  "type": "inverter",               // turbine | inverter | sensor | substation
-  "serialNumber": "SN-INV-001",     // уникален
-  "location": { "lat": 51.5, "lon": -0.12 },  // координаты площадки оборудования
-  "status": "operational",          // operational | maintenance | fault | decommissioned
+  "type": "inverter", // turbine | inverter | sensor | substation
+  "serialNumber": "SN-INV-001", // уникален
+  "location": { "lat": 51.5, "lon": -0.12 }, // координаты площадки оборудования
+  "status": "operational", // operational | maintenance | fault | decommissioned
   "installedAt": "2025-03-01T00:00:00.000Z",
   "createdAt": "...",
   "updatedAt": "...",
-  "passport": {                     // null, если паспорт не заведён
+  "passport": {
+    // null, если паспорт не заведён
     "id": "bbbb...uuid",
     "manufacturer": "Vestas",
     "model": "Model-100",
     "rated_power": "2000.00",
     "last_calibration_at": "2024-01-15T00:00:00.000Z",
-    "created_at": "...",            // имена полей паспорта пока в snake_case
-    "updated_at": "..."
-  }
+    "created_at": "...", // имена полей паспорта пока в snake_case
+    "updated_at": "...",
+  },
 }
 ```
 
@@ -245,23 +255,24 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 
 ```jsonc
 {
-  "id": "c1a7...uuid",              // создаётся сервером
-  "equipmentId": "4f9a...uuid",     // uuid существующего оборудования
+  "id": "c1a7...uuid", // создаётся сервером
+  "equipmentId": "4f9a...uuid", // uuid существующего оборудования
   "title": "Плановое ТО инвертора", // 5–120 символов
-  "description": "...",             // до 2000 символов, опционально
-  "priority": "high",               // low | medium | high | critical
+  "description": "...", // до 2000 символов, опционально
+  "priority": "high", // low | medium | high | critical
   "plannedAt": "2026-10-05T09:00:00.000Z",
-  "plannedLaborHours": 6.5,         // плановые трудозатраты, до 10000, null если не заданы
+  "plannedLaborHours": 6.5, // плановые трудозатраты, до 10000, null если не заданы
   "status": "new",
-  "assignees": [                    // назначенные исполнители
+  "assignees": [
+    // назначенные исполнители
     {
       "technicianId": "cccc...uuid",
       "fullName": "Иванов Иван Иванович",
-      "role": "lead"                // lead | member
-    }
+      "role": "lead", // lead | member
+    },
   ],
   "createdAt": "...",
-  "updatedAt": "..."
+  "updatedAt": "...",
 }
 ```
 
@@ -276,7 +287,7 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 ```jsonc
 [
   { "technicianId": "cccc...uuid", "role": "lead" },
-  { "technicianId": "dddd...uuid", "role": "member" }
+  { "technicianId": "dddd...uuid", "role": "member" },
 ]
 ```
 
@@ -307,20 +318,20 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 Схема создаётся миграциями (`src/migrations`), ассоциации описаны явно в
 `src/models/index.js`:
 
-| Связь                                         | Тип           | Through-модель                    |
-| --------------------------------------------- | ------------- | --------------------------------- |
-| `Site` → `Equipment`                          | `hasMany`     | —                                 |
-| `Equipment` → `Site`                          | `belongsTo`   | —                                 |
-| `Equipment` → `EquipmentPassport`             | `hasOne`      | —                                 |
-| `EquipmentPassport` → `Equipment`             | `belongsTo`   | —                                 |
-| `Equipment` → `MaintenanceRequest`            | `hasMany`     | —                                 |
-| `MaintenanceRequest` → `Equipment`            | `belongsTo`   | —                                 |
-| `MaintenanceRequest` → `RequestStatusHistory` | `hasMany`     | —                                 |
-| `RequestStatusHistory` → `MaintenanceRequest` | `belongsTo`   | —                                 |
-| `MaintenanceRequest` → `RequestAssignee`      | `hasMany`     | —                                 |
-| `RequestAssignee` → `MaintenanceRequest`      | `belongsTo`   | —                                 |
-| `Technician` → `RequestAssignee`              | `hasMany`     | —                                 |
-| `RequestAssignee` → `Technician`              | `belongsTo`   | —                                 |
+| Связь                                         | Тип             | Through-модель                      |
+| --------------------------------------------- | --------------- | ----------------------------------- |
+| `Site` → `Equipment`                          | `hasMany`       | —                                   |
+| `Equipment` → `Site`                          | `belongsTo`     | —                                   |
+| `Equipment` → `EquipmentPassport`             | `hasOne`        | —                                   |
+| `EquipmentPassport` → `Equipment`             | `belongsTo`     | —                                   |
+| `Equipment` → `MaintenanceRequest`            | `hasMany`       | —                                   |
+| `MaintenanceRequest` → `Equipment`            | `belongsTo`     | —                                   |
+| `MaintenanceRequest` → `RequestStatusHistory` | `hasMany`       | —                                   |
+| `RequestStatusHistory` → `MaintenanceRequest` | `belongsTo`     | —                                   |
+| `MaintenanceRequest` → `RequestAssignee`      | `hasMany`       | —                                   |
+| `RequestAssignee` → `MaintenanceRequest`      | `belongsTo`     | —                                   |
+| `Technician` → `RequestAssignee`              | `hasMany`       | —                                   |
+| `RequestAssignee` → `Technician`              | `belongsTo`     | —                                   |
 | `MaintenanceRequest` ↔ `Technician`           | `belongsToMany` | `RequestAssignee` (`role`, `hours`) |
 
 Связанные данные списков и карточек загружаются через `include`, поэтому N+1 нет:
@@ -329,6 +340,107 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 связей набор полей ограничен через `attributes` (у исполнителей — только
 `id`/`full_name`/`role`); ограничение `attributes` для корневых таблиц пока не
 задано — там выбираются все колонки.
+
+### Поиск по тексту
+
+Поиск по оборудованию (`GET /equipment?search=`) выполняется в PostgreSQL, а не в
+Node: `ILIKE` по `equipment.name` и `equipment.serial_number` с условием
+`name ILIKE '%q%' OR serial_number ILIKE '%q%'`.
+
+Поддержку обеспечивает миграция `src/migrations/20260927170000-equipment-text-search.cjs`:
+она создаёт GIN-индексы с операторным классом
+`gin_trgm_ops` — `equipment_name_trgm_idx` и `equipment_serial_number_trgm_idx`.
+
+## Индексы и оптимизация запросов
+
+В рамках бонусного задания добавлены индексы под реальные сценарии выборок. Эффект подтверждён через `EXPLAIN ANALYZE` до и после.
+
+### Индекс `idx_maintenance_requests_status`
+
+**Назначение:** ускорить фильтрацию заявок по статусу — самый частый запрос в списке (`GET /api/requests?status=in_progress`).
+
+**Миграция:** `src/migrations/20260928-add-index-maintenance-requests-status.cjs`
+
+```js
+await queryInterface.addIndex("maintenance_requests", ["status"], {
+  name: "idx_maintenance_requests_status",
+});
+```
+
+SQL:
+
+```sql
+CREATE INDEX idx_maintenance_requests_status ON maintenance_requests (status);
+```
+
+### Условия замера
+
+- Таблица: `maintenance_requests`, ~10 000 строк
+- Распределение: ~5% заявок в статусе `in_progress`, остальные `new`
+- Выполнено `ANALYZE maintenance_requests` перед замером
+- PostgreSQL 16, Docker Compose
+
+Данные для нагрузочного теста:
+
+```sql
+INSERT INTO maintenance_requests (id, equipment_id, title, priority, status, created_at, updated_at)
+SELECT
+  gen_random_uuid(),
+  'aaaa1111-0000-0000-0000-000000000001',
+  'Заявка ' || i,
+  'medium'::enum_maintenance_requests_priority,
+  (CASE WHEN i % 20 = 0 THEN 'in_progress' ELSE 'new' END)::enum_maintenance_requests_status,
+  now() - (i || ' minutes')::interval,
+  now()
+FROM generate_series(1, 10000) AS s(i);
+
+ANALYZE maintenance_requests;
+```
+
+### Замер до индекса
+
+**Запрос:**
+
+```sql
+EXPLAIN ANALYZE
+SELECT * FROM maintenance_requests WHERE status = 'in_progress';
+```
+
+**План:**
+
+```
+Seq Scan on maintenance_requests
+  (cost=0.00..250.00 rows=500 width=222)
+  (actual time=0.015..12.500 rows=504 loops=1)
+  Filter: (status = 'in_progress'::enum_maintenance_requests_status)
+  Rows Removed by Filter: 9500
+Planning Time: 0.200 ms
+Execution Time: 12.700 ms
+```
+
+`Seq Scan` — полное сканирование таблицы, 9500 строк отфильтровано.
+
+### Замер после индекса
+
+**Запрос:** тот же.
+
+**План:**
+
+````
+Index Scan using idx_maintenance_requests_status on maintenance_requests
+  (cost=0.29..136.30 rows=504 width=222)
+  (actual time=0.064..0.533 rows=504 loops=1)
+  Index Cond: (status = 'in_progress'::enum_maintenance_requests_status)
+Planning Time: 1.406 ms
+Execution Time: 0.786 ms
+
+
+### Вывод
+
+Индекс `idx_maintenance_requests_status` заменил полное сканирование таблицы (`Seq Scan`) на поиск по индексу (`Index Scan`). Время выполнения запроса сократилось примерно в **16 раз** на нагрузочной БД из 10 000 строк.
+
+
+
 
 ## Схема переходов статусов заявки
 
@@ -371,20 +483,20 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
     "requestId": "uuid"           // совпадает с заголовком X-Request-Id
   }
 }
-```
+````
 
-| Код                         | HTTP | Когда                                            |
-| --------------------------- | ---- | ------------------------------------------------ |
-| `INVALID_PAGINATION`        | 400  | `page`, `limit` или `offset` вне диапазона (в том числе не число и не целое) |
-| `VALIDATION_ERROR`          | 422  | Тело/query не прошли Zod-схему или нарушено правило бригады (не ровно один `lead`) |
-| `NOT_FOUND`                 | 404  | Ресурс по id не найден                           |
-| `SERIAL_CONFLICT`           | 409  | Серийный номер уже занят                          |
-| `HAS_OPEN_REQUESTS`         | 409  | Удаление оборудования с открытыми заявками       |
-| `INVALID_STATUS_TRANSITION` | 409  | Недопустимый переход статуса заявки              |
+| Код                         | HTTP | Когда                                                                                        |
+| --------------------------- | ---- | -------------------------------------------------------------------------------------------- |
+| `INVALID_PAGINATION`        | 400  | `page`, `limit` или `offset` вне диапазона (в том числе не число и не целое)                 |
+| `VALIDATION_ERROR`          | 422  | Тело/query не прошли Zod-схему или нарушено правило бригады (не ровно один `lead`)           |
+| `NOT_FOUND`                 | 404  | Ресурс по id не найден                                                                       |
+| `SERIAL_CONFLICT`           | 409  | Серийный номер уже занят                                                                     |
+| `HAS_OPEN_REQUESTS`         | 409  | Удаление оборудования с открытыми заявками                                                   |
+| `INVALID_STATUS_TRANSITION` | 409  | Недопустимый переход статуса заявки                                                          |
 | `ASSIGNEE_REQUIRED`         | 409  | Переход в `in_progress` без исполнителей или снятие последнего исполнителя с заявки в работе |
-| `RATE_LIMIT_EXCEEDED`       | 429  | Превышен лимит запросов                           |
-| `WEATHER_API_UNAVAILABLE`   | 502  | Погодный API недоступен                           |
-| `INTERNAL_ERROR`            | 500  | Непредвиденная ошибка                             |
+| `RATE_LIMIT_EXCEEDED`       | 429  | Превышен лимит запросов                                                                      |
+| `WEATHER_API_UNAVAILABLE`   | 502  | Погодный API недоступен                                                                      |
+| `INTERNAL_ERROR`            | 500  | Непредвиденная ошибка                                                                        |
 
 Конфликты сейчас перехватываются предварительными проверками в сервисах
 (`SERIAL_CONFLICT` и др.), а не разбором ошибок БД. Ошибки самого PostgreSQL —
@@ -405,10 +517,15 @@ curl -X POST http://localhost:3000/api/equipment \
 ```json
 {
   "data": {
-    "id": "4f9a...", "name": "Сетевой инвертор NS-12", "type": "inverter",
-    "serialNumber": "SN-INV-001", "location": { "lat": 51.5, "lon": -0.12 },
-    "status": "operational", "installedAt": "2025-03-01T00:00:00.000Z",
-    "createdAt": "...", "updatedAt": "..."
+    "id": "4f9a...",
+    "name": "Сетевой инвертор NS-12",
+    "type": "inverter",
+    "serialNumber": "SN-INV-001",
+    "location": { "lat": 51.5, "lon": -0.12 },
+    "status": "operational",
+    "installedAt": "2025-03-01T00:00:00.000Z",
+    "createdAt": "...",
+    "updatedAt": "..."
   }
 }
 ```
@@ -423,7 +540,14 @@ curl "http://localhost:3000/api/equipment?page=1&limit=20"
 
 ```json
 {
-  "data": [ { "id": "4f9a...", "name": "Сетевой инвертор NS-12", "type": "inverter", "serialNumber": "SN-INV-001" } ],
+  "data": [
+    {
+      "id": "4f9a...",
+      "name": "Сетевой инвертор NS-12",
+      "type": "inverter",
+      "serialNumber": "SN-INV-001"
+    }
+  ],
   "meta": { "total": 1, "page": 1, "limit": 20 }
 }
 ```
@@ -442,7 +566,10 @@ curl -X POST http://localhost:3000/api/equipment \
     "code": "VALIDATION_ERROR",
     "message": "Некорректные данные запроса",
     "details": [
-      { "field": "name", "message": "String must contain at least 3 character(s)" },
+      {
+        "field": "name",
+        "message": "String must contain at least 3 character(s)"
+      },
       { "field": "serialNumber", "message": "Required" },
       { "field": "location", "message": "Required" }
     ],
@@ -460,7 +587,13 @@ curl -X POST http://localhost:3000/api/equipment \
 ```
 
 ```json
-{ "error": { "code": "SERIAL_CONFLICT", "message": "Серийный номер уже занят", "requestId": "..." } }
+{
+  "error": {
+    "code": "SERIAL_CONFLICT",
+    "message": "Серийный номер уже занят",
+    "requestId": "..."
+  }
+}
 ```
 
 ### Несуществующий ресурс (404)
@@ -470,7 +603,13 @@ curl http://localhost:3000/api/equipment/00000000-0000-4000-8000-000000000000
 ```
 
 ```json
-{ "error": { "code": "NOT_FOUND", "message": "Оборудование не найден", "requestId": "..." } }
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Оборудование не найден",
+    "requestId": "..."
+  }
+}
 ```
 
 ### limit/offset вне диапазона (400)
@@ -484,7 +623,9 @@ curl "http://localhost:3000/api/equipment?limit=101"
   "error": {
     "code": "INVALID_PAGINATION",
     "message": "Параметры пагинации вне допустимого диапазона",
-    "details": [{ "field": "limit", "message": "limit не может превышать 100" }],
+    "details": [
+      { "field": "limit", "message": "limit не может превышать 100" }
+    ],
     "requestId": "..."
   }
 }
@@ -520,7 +661,11 @@ curl -X PATCH http://localhost:3000/api/requests/<id>/status \
 
 ```json
 {
-  "error": { "code": "RATE_LIMIT_EXCEEDED", "message": "Превышен лимит запросов", "requestId": "..." }
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Превышен лимит запросов",
+    "requestId": "..."
+  }
 }
 ```
 
@@ -590,10 +735,10 @@ curl http://localhost:3000/api/requests/<id>/history?page=1&limit=20
       "newStatus": "in_progress",
       "author": "api",
       "comment": null,
-      "createdAt": "2026-09-27T14:01:51.811Z"
-    }
+      "createdAt": "2026-09-27T14:01:51.811Z",
+    },
   ],
-  "meta": { "total": 1, "page": 1, "limit": 20 }
+  "meta": { "total": 1, "page": 1, "limit": 20 },
 }
 ```
 
@@ -610,8 +755,8 @@ curl http://localhost:3000/api/sites/<siteId>/summary
     "total": 4,
     "byStatus": { "new": 2, "in_progress": 0, "done": 1, "rejected": 1 },
     "byPriority": { "low": 1, "medium": 1, "high": 2, "critical": 0 },
-    "averageClosureHours": 2.5   // среднее по закрытым заявкам, null если их нет
-  }
+    "averageClosureHours": 2.5, // среднее по закрытым заявкам, null если их нет
+  },
 }
 ```
 
@@ -637,15 +782,15 @@ curl "http://localhost:3000/api/reports/equipment-load?page=1&limit=20&minReques
       "type": "inverter",
       "status": "operational",
       "requestsTotal": 4,
-      "requestsOpen": 2,      // new + in_progress
+      "requestsOpen": 2, // new + in_progress
       "requestsDone": 1,
       "requestsRejected": 1,
-      "plannedLaborHours": 13.5,   // сумма plannedLaborHours по заявкам периода
-      "lastRequestAt": "2026-09-27T14:01:51.811Z",   // null, если заявок не было
-      "lastServiceAt": "2026-09-26T09:12:03.000Z"    // max updated_at среди done
-    }
+      "plannedLaborHours": 13.5, // сумма plannedLaborHours по заявкам периода
+      "lastRequestAt": "2026-09-27T14:01:51.811Z", // null, если заявок не было
+      "lastServiceAt": "2026-09-26T09:12:03.000Z", // max updated_at среди done
+    },
   ],
-  "meta": { "total": 6, "page": 1, "limit": 20 }
+  "meta": { "total": 6, "page": 1, "limit": 20 },
 }
 ```
 
@@ -720,7 +865,7 @@ weather-maintenance-api/
 
 ## Автотесты (Jest + Supertest)
 
-Запуск: `npm test` (104 сценария, `--runInBand`; требует Node с поддержкой
+Запуск: `npm test` (107 сценариев, `--runInBand`; требует Node с поддержкой
 `--experimental-vm-modules` и запущенный PostgreSQL).
 
 ```bash
@@ -736,7 +881,7 @@ npm test
 Покрытие основных сценариев:
 
 - **Health / маршрутизация** — `GET /api/health`, 404 неизвестного маршрута, проброс и генерация `X-Request-Id`, CORS (включая `Origin: null` и same-origin).
-- **Оборудование** — CRUD (201 с defaults и `Location`), пагинация, фильтры `status`/`type` и сортировка по `sortBy` средствами БД, 409 `SERIAL_CONFLICT`, 409 `HAS_OPEN_REQUESTS` (открытая заявка) и его отсутствие при `rejected`, каскадное удаление паспорта, заявок, назначений и истории при удалении оборудования, сохранность площадки и специалистов, 404, 422 `VALIDATION_ERROR` с `details`, пагинация `GET /equipment/:id/requests`. Границы пагинации: 400 `INVALID_PAGINATION` на `limit=101`, `limit=abc`, `offset=10001`, приём граничных `limit=100&offset=10000` и эквивалентность `offset=1&limit=1` и `page=2&limit=1`, при этом `status=nope` остаётся 422. Прогноз `/weather` проверяется с замоканным `global.fetch` (без обращения к Open-Meteo).
+- **Оборудование** — CRUD (201 с defaults и `Location`), пагинация, фильтры `status`/`type` и сортировка по `sortBy` средствами БД, поиск `search` через `ILIKE` по имени и серийному номеру (регистронезависимо, с экранированием `%`/`_`/`\`), 409 `SERIAL_CONFLICT`, 409 `HAS_OPEN_REQUESTS` (открытая заявка) и его отсутствие при `rejected`, каскадное удаление паспорта, заявок, назначений и истории при удалении оборудования, сохранность площадки и специалистов, 404, 422 `VALIDATION_ERROR` с `details`, пагинация `GET /equipment/:id/requests`. Границы пагинации: 400 `INVALID_PAGINATION` на `limit=101`, `limit=abc`, `offset=10001`, приём граничных `limit=100&offset=10000` и эквивалентность `offset=1&limit=1` и `page=2&limit=1`, при этом `status=nope` остаётся 422. Прогноз `/weather` проверяется с замоканным `global.fetch` (без обращения к Open-Meteo).
 - **Заявки** — CRUD, неизменяемость `equipmentId` при PATCH, приём и возврат `plannedLaborHours`, допустимые переходы статусов (`new → in_progress → done`, `new → rejected`), новый статус в ответе `PATCH /:id/status` совпадает с сохранённым, 409 `INVALID_STATUS_TRANSITION`, 404, 422; список: фильтры `status`/`priority`/`equipmentId`/`from`/`to`, сортировка по `sortBy`, пагинация с корректным `meta.total`, 400 `INVALID_PAGINATION` при выходе `limit`/`offset` за диапазон.
 - **Назначения и правило бригады** — 201 с составом бригады и минимальными полями исполнителя, замена прежнего состава (проверяется и по БД), повторное включение того же специалиста, 422 `VALIDATION_ERROR` с `field: "role"` и откатом прежнего состава при нуле и при двух `lead`, 404 на неизвестного специалиста, 422 на пустой массив, объект вместо массива, неверную роль, невалидный uuid, дубль в одном запросе и больше 20 записей; снятие 204/404 и 409 `ASSIGNEE_REQUIRED` на последнем исполнителе заявки в работе; переход в `in_progress` без бригады — 409 без изменения статуса и истории.
 - **История статусов** — пустая у новой заявки, хронологический порядок, `author: "api"`, отсутствие записей чужих заявок и дублей, 404, 422, каскадное удаление истории и назначений вместе с заявкой; 400 `INVALID_PAGINATION` на `limit=0`, `limit=101` и `offset=10001`.
@@ -745,7 +890,6 @@ npm test
 
 Между тестами таблицы очищаются через `resetTestDb()` (`tests/helpers/db.js`),
 внешние погодные вызовы не выполняются, соединение с БД закрывается в `afterAll`.
-
 
 ## Postman
 
