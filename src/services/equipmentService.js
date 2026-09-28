@@ -2,23 +2,16 @@ import { equipmentRepository } from '../repositories/equipmentRepository.js';
 import { requestsRepository } from '../repositories/requestsRepository.js';
 import { NotFoundError } from '../errors/NotFoundError.js';
 import { ConflictError } from '../errors/ConflictError.js';
-import { paginate } from '../utils/pagination.js';
 import { getLog } from '../utils/context.js';
+import { resolveOffset } from '../utils/paging.js';
 
 export const equipmentService = {
-    async list(query) {
-        const all = await equipmentRepository.findAll();
-        let filtered = all;
-        if (query.status) filtered = filtered.filter((e) => e.status === query.status);
-        if (query.type) filtered = filtered.filter((e) => e.type === query.type);
-
-        if (query.sortBy) {
-            const dir = query.order === 'desc' ? -1 : 1;
-            filtered = [...filtered].sort((a, b) =>
-                a[query.sortBy] > b[query.sortBy] ? dir : a[query.sortBy] < b[query.sortBy] ? -dir : 0,
-            );
-        }
-        return paginate(filtered, query);
+    async list({ page, limit, offset, ...filters }) {
+        const { rows, total } = await equipmentRepository.findPage(filters, {
+            limit,
+            offset: resolveOffset({ page, limit, offset }),
+        });
+        return { data: rows, meta: { total, page, limit } };
     },
 
     async getById(id) {
@@ -56,8 +49,12 @@ export const equipmentService = {
         getLog().info({ event: 'equipment_removed', id }, 'Оборудование удалено');
     },
 
-    async listRequests(equipmentId) {
+    async listRequests(equipmentId, { page, limit, offset } = {}) {
         await this.getById(equipmentId);
-        return requestsRepository.findByEquipmentId(equipmentId);
+        const { rows, total } = await requestsRepository.findByEquipmentPage(equipmentId, {
+            limit,
+            offset: resolveOffset({ page, limit, offset }),
+        });
+        return { data: rows, meta: { total, page, limit } };
     },
 };

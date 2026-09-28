@@ -1,15 +1,15 @@
 node_modules
-npm - debug.log *
+npm-debug.log*
 .env
-        .env.*
-    !.env.example
+.env.*
+!.env.example
 reports
 coverage
-    .git
-    .gitignore
-    .vscode
-    .idea
+.git
+.gitignore
+.vscode
+.idea
 docs
-    *.md
+*.md
 Dockerfile
-docker - compose.yml
+docker-compose.yml

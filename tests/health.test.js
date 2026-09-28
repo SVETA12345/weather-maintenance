@@ -1,7 +1,10 @@
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { closeTestDb } from './helpers/db.js';
 
 const app = createApp();
+
+afterAll(closeTestDb);
 
 describe('Health', () => {
     test('GET /api/health — 200 и структура ответа', async () => {

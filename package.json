@@ -8,13 +8,19 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:db:drop": "node scripts/drop-test-db.mjs"
   },
   "jest": {
     "testEnvironment": "node",
     "transform": {},
-    "testMatch": ["**/tests/**/*.test.js"],
-    "setupFiles": ["<rootDir>/jest.setup.cjs"]
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
+    "globalSetup": "<rootDir>/tests/globalSetup.js",
+    "setupFiles": [
+      "<rootDir>/jest.setup.cjs"
+    ]
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -22,13 +28,17 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
+    "pg": "^8.23.0",
+    "pg-hstore": "^2.3.4",
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
     "pino-pretty": "^11.3.0",
+    "sequelize": "^6.37.8",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "jest": "^29.7.0",
+    "sequelize-cli": "^6.6.5",
     "supertest": "^7.2.2"
   }
 }
