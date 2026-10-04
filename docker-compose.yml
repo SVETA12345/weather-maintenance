@@ -133,6 +133,9 @@ services:
       # legacy-алертинг выключены.
       GF_UNIFIED_ALERTING_ENABLED: "false"
       GF_ALERTING_ENABLED: "false"
+      GF_SERVER_ROOT_URL: http://192.168.1.10:3001
+      GF_SECURITY_CSRF_TRUSTED_ORIGINS: 192.168.1.10
+      GF_SECURITY_COOKIE_SAMESITE: lax
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
