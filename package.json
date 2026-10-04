@@ -9,7 +9,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
-    "test:db:drop": "node scripts/drop-test-db.mjs"
+    "test:db:drop": "node scripts/drop-test-db.mjs",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --coverage"
   },
   "jest": {
     "testEnvironment": "node",
@@ -20,7 +21,28 @@
     "globalSetup": "<rootDir>/tests/globalSetup.js",
     "setupFiles": [
       "<rootDir>/jest.setup.cjs"
-    ]
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "!src/server.js",
+      "!src/seeders/**",
+      "!src/migrations/**"
+    ],
+    "coverageReporters": [
+      "text-summary",
+      "text",
+      "lcov",
+      "html"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageThreshold": {
+      "global": {
+        "statements": 85,
+        "branches": 65,
+        "functions": 90,
+        "lines": 85
+      }
+    }
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
