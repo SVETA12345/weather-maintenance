@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
 import { randomUUID } from 'node:crypto';
@@ -11,6 +12,8 @@ import { contextMiddleware } from './utils/context.js';
 import { apiRouter } from './routes/index.js';
 import { notFound } from './middlewares/notFound.js';
 import { errorHandler } from './middlewares/errorHandler.js';
+import { metricsMiddleware } from './middlewares/metrics.js';
+import { metricsHandler } from './controllers/metricsController.js';
 import { config } from './config/index.js';
 
 const publicDir = fileURLToPath(new URL('../public', import.meta.url));
@@ -56,18 +59,27 @@ export function createApp() {
         cb(err);
       },
       methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-      credentials: false,
+      // credentials нужен для refresh-cookie: браузер отправляет её только
+      // вместе с Access-Control-Allow-Credentials и конкретным Origin
+      // (источник '*' при этом недопустим — он и не используется).
+      credentials: true,
     })(req, res, next);
   });
 
   // 3. Логирование запросов + request id
   app.use(httpLogger);
 
+  // 3.1 Метрики Prometheus: таймер и счётчики считаются по шаблону маршрута
+  app.use(metricsMiddleware);
+
   // 4. Проброс контекста (reqId, req.log) вглубь слоёв
   app.use(contextMiddleware);
 
   // 5. Разбор JSON с ограничением размера
   app.use(express.json({ limit: '100kb' }));
+
+  // 5.1 Refresh-cookie (разбор cookie нужен только для /api/auth/refresh и logout)
+  app.use(cookieParser());
 
   // 5.1 Статика (простая веб-страница обслуживания) — отдельный процесс/прокси не нужен
   app.use(express.static(publicDir));
@@ -92,6 +104,10 @@ export function createApp() {
       },
     }),
   );
+
+  // 6.1 Метрики вне /api: путь задан требованиями эксплуатации (GET /metrics),
+  // поэтому не попадает под лимит запросов /api и не требует access-токена.
+  app.get('/metrics', metricsHandler);
 
   // 7. Маршруты
   app.use('/api', apiRouter);

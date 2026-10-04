@@ -19,7 +19,7 @@ const ACTIONS = {
   ],
 };
 
-const state = { page: 1, limit: 10, equipment: new Map() };
+const state = { page: 1, limit: 10, equipment: new Map(), user: null, accessToken: null };
 
 // file:// не имеет origin — обращаемся к API по абсолютному адресу;
 // при раздаче страницы самим сервером используем относительные пути.
@@ -49,23 +49,103 @@ function clearMessage() { $('#message').className = ''; $('#message').innerHTML 
 async function api(path, options = {}) {
   const url = /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`;
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
+    // Refresh-токен лежит в HttpOnly-cookie: браузер отправляет её только с credentials.
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(state.accessToken ? { Authorization: `Bearer ${state.accessToken}` } : {}),
+    },
     ...options,
   });
   const body = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     const err = new Error((body && body.error && body.error.message) || `Ошибка ${res.status}`);
     err.code = body && body.error && body.error.code || '';
+    err.status = res.status;
     err.details = body && body.error && body.error.details || [];
     throw err;
   }
   return body;
 }
 
+// Обёртка с одним автоматическим продлением сессии: истёкший access-токен (15 минут)
+// заменяется новым по refresh-cookie, и только повторная неудача возвращает на форму входа.
+async function apiWithSession(path, options) {
+  try {
+    return await api(path, options);
+  } catch (err) {
+    if (err.status !== 401) throw err;
+    // Токена в памяти нет (первый вход или reload) либо он истёк: продлеваем сессию
+    // по refresh-cookie. Повторная неудача означает, что войти надо заново.
+    try {
+      await refreshSession();
+    } catch {
+      showLogin();
+      throw err;
+    }
+    return api(path, options);
+  }
+}
+
+async function applySession({ accessToken, user }) {
+  state.accessToken = accessToken;
+  state.user = user;
+  $('#login-panel').hidden = true;
+  $('#app').hidden = false;
+  $('#user-box').hidden = false;
+  $('#user-info').textContent = `${user.email} — ${user.role}`;
+  // Создавать заявки и менять статусы могут только technician и admin.
+  const canEdit = user.role === 'technician' || user.role === 'admin';
+  $('#create-panel').hidden = !canEdit;
+}
+
+function showLogin() {
+  state.accessToken = null;
+  state.user = null;
+  $('#login-panel').hidden = false;
+  $('#app').hidden = true;
+  $('#user-box').hidden = true;
+  clearMessage();
+}
+
+async function refreshSession() {
+  const res = await api('/api/auth/refresh', { method: 'POST' });
+  await applySession(res.data);
+}
+
+$('#login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    clearMessage();
+    const res = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: $('#login-email').value,
+        password: $('#login-password').value,
+      }),
+    });
+    $('#login-password').value = '';
+    await applySession(res.data);
+    await loadEquipment();
+    await loadRequests();
+  } catch (err) {
+    showMessage(err.message, 'error', err.details);
+  }
+});
+
+$('#logout').addEventListener('click', async () => {
+  try {
+    await api('/api/auth/logout', { method: 'POST' });
+  } catch {
+    // Выход не должен блокироваться ошибкой: локальная сессия всё равно сбрасывается.
+  }
+  showLogin();
+});
+
 async function loadEquipment() {
   const all = [];
   for (let page = 1; ; page += 1) {
-    const res = await api(`/api/equipment?page=${page}&limit=100&sortBy=name`);
+    const res = await apiWithSession(`/api/equipment?page=${page}&limit=100&sortBy=name`);
     res.data.forEach((e) => {
       state.equipment.set(e.id, e);
       all.push(e);
@@ -118,6 +198,8 @@ function statusBadge(status) {
 function actionButtons(row) {
   const acts = ACTIONS[row.status];
   if (!acts) return '<span class="muted">—</span>';
+  // Viewer только читает: кнопок смены статуса у него нет (и API вернул бы 403).
+  if (!state.user || state.user.role === 'viewer') return '<span class="muted">—</span>';
   return acts
     .map(
       (a) =>
@@ -131,7 +213,7 @@ async function loadRequests() {
   const tbody = $('#rows');
   tbody.innerHTML = '<tr><td colspan="7" class="empty">Загрузка…</td></tr>';
   try {
-    const res = await api(`/api/requests?${buildQuery()}`);
+    const res = await apiWithSession(`/api/requests?${buildQuery()}`);
     const pages = Math.max(1, Math.ceil(res.meta.total / res.meta.limit));
     if (state.page > pages) {
       state.page = pages;
@@ -180,7 +262,7 @@ $('#create-form').addEventListener('submit', async (ev) => {
 
   try {
     clearMessage();
-    await api('/api/requests', { method: 'POST', body: JSON.stringify(payload) });
+    await apiWithSession('/api/requests', { method: 'POST', body: JSON.stringify(payload) });
     showMessage('Заявка создана', 'success');
     $('#create-form').reset();
     state.page = 1;
@@ -195,7 +277,7 @@ $('#rows').addEventListener('click', async (ev) => {
   if (!btn) return;
   try {
     clearMessage();
-    await api(`/api/requests/${btn.dataset.id}/status`, {
+    await apiWithSession(`/api/requests/${btn.dataset.id}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ status: btn.dataset.actionStatus }),
     });
@@ -217,11 +299,20 @@ $('#f-reset').addEventListener('click', () => {
 $('#prev').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; loadRequests(); } });
 $('#next').addEventListener('click', () => { state.page += 1; loadRequests(); });
 
+// Старт страницы: access-токен живёт только в памяти, поэтому после перезагрузки
+// восстанавливаем сессию по refresh-cookie. Если cookie нет или он протух —
+// показываем форму входа и не делаем защищённых запросов.
 (async () => {
+  showLogin();
+  try {
+    await refreshSession();
+  } catch {
+    return;
+  }
   try {
     await loadEquipment();
+    await loadRequests();
   } catch (err) {
     showMessage(err.message, 'error', err.details);
   }
-  loadRequests();
 })();

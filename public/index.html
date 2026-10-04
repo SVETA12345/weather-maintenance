@@ -75,14 +75,46 @@
   .muted { color: var(--muted); font-size: 13px; }
   .pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .login-grid { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Заявки на техническое обслуживание</h1>
-  <p class="subtitle">Список заявок и создание новых через REST API (<code>/api/requests</code>)</p>
+  <div class="topbar">
+    <div>
+      <h1>Заявки на техническое обслуживание</h1>
+      <p class="subtitle" style="margin-bottom:0">Список заявок и создание новых через REST API (<code>/api/requests</code>)</p>
+    </div>
+    <div id="user-box" hidden>
+      <span class="muted" id="user-info"></span>
+      <button class="ghost sm" id="logout" type="button">Выйти</button>
+    </div>
+  </div>
 
   <div id="message"></div>
+
+  <div class="panel" id="login-panel">
+    <h2>Вход</h2>
+    <form class="login-grid" id="login-form">
+      <div class="field">
+        <label for="login-email">Email</label>
+        <input type="email" id="login-email" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="login-password">Пароль</label>
+        <input type="password" id="login-password" autocomplete="current-password" required>
+      </div>
+      <button type="submit">Войти</button>
+    </form>
+    <p class="muted" style="margin:12px 0 0">
+      Демонстрационные учётные записи сидов: <code>admin@example.com</code>,
+      <code>tech@example.com</code>, <code>viewer@example.com</code> — пароли задаются в
+      <code>.env</code> (<code>SEED_ADMIN_PASSWORD</code> и другие).
+    </p>
+  </div>
+
+  <div id="app" hidden>
 
   <div class="panel">
     <h2>Фильтры</h2>
@@ -117,7 +149,7 @@
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="create-panel">
     <h2>Создать заявку</h2>
     <form id="create-form" class="form-grid">
       <div class="field">
@@ -174,6 +206,7 @@
         <button class="ghost sm" id="next" type="button">Вперёд &rarr;</button>
       </div>
     </div>
+  </div>
   </div>
 </div>
 

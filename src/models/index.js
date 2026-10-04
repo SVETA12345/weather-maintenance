@@ -5,6 +5,8 @@ import { defineRequestAssigneeModel } from './requestAssigneeModel.js';
 import { defineRequestStatusHistoryModel } from './requestStatusHistoryModel.js';
 import { defineSiteModel } from './siteModel.js';
 import { defineTechnicianModel } from './technicianModel.js';
+import { defineUserModel } from './userModel.js';
+import { defineRefreshTokenModel } from './refreshTokenModel.js';
 
 export function initModels(sequelize) {
     const Site = defineSiteModel(sequelize);
@@ -14,6 +16,8 @@ export function initModels(sequelize) {
     const Technician = defineTechnicianModel(sequelize);
     const RequestAssignee = defineRequestAssigneeModel(sequelize);
     const RequestStatusHistory = defineRequestStatusHistoryModel(sequelize);
+    const User = defineUserModel(sequelize);
+    const RefreshToken = defineRefreshTokenModel(sequelize);
 
     Site.hasMany(Equipment, { foreignKey: 'site_id', as: 'equipment' });
     Equipment.belongsTo(Site, { foreignKey: 'site_id', as: 'site' });
@@ -32,6 +36,12 @@ export function initModels(sequelize) {
 
     Technician.hasMany(RequestAssignee, { foreignKey: 'technician_id', as: 'assignees' });
     RequestAssignee.belongsTo(Technician, { foreignKey: 'technician_id', as: 'technician' });
+
+    Technician.hasMany(User, { foreignKey: 'technician_id', as: 'users' });
+    User.belongsTo(Technician, { foreignKey: 'technician_id', as: 'technician' });
+
+    User.hasMany(RefreshToken, { foreignKey: 'user_id', as: 'refreshTokens' });
+    RefreshToken.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
 
     MaintenanceRequest.belongsToMany(Technician, {
         through: RequestAssignee,
@@ -54,5 +64,7 @@ export function initModels(sequelize) {
         Technician,
         RequestAssignee,
         RequestStatusHistory,
+        User,
+        RefreshToken,
     };
 }

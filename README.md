@@ -8,6 +8,9 @@ REST API для планирования технического обслужи
 - Реестр оборудования: установки турбин, инверторов, датчиков и подстанций с геолокацией и серийными номерами.
 - Заявки на обслуживание: создание, редактирование, жизненный цикл статусов.
 - Погодное API: прогноз на 3 дня в точке установки оборудования с признаком пригодности для наружных работ (`suitableForOutdoorWork`).
+- Роли и аутентификация: JWT access-токен + refresh-cookie, три роли (`viewer`, `technician`, `admin`) с разными правами.
+- Мониторинг: метрики Prometheus на `GET /metrics`, Prometheus + Alertmanager + Grafana в `docker compose` с автоматическим provisioning.
+- Эксплуатационные endpoints: `GET /api/health/live`, `GET /api/health/ready`, `GET /api/docs` (Swagger UI).
 - Данные хранятся в PostgreSQL: репозитории скрывают SQL, бизнес-логика и HTTP-слой не зависят от БД.
 - Структурные JSON-логи (pino) с единым `requestId` через `AsyncLocalStorage`.
 
@@ -38,9 +41,10 @@ npm start              # продакшен-запуск (JSON-логи)
 
 Порядок: поднять PostgreSQL → дождаться healthcheck → применить миграции →
 наполнить сидами → запустить приложение. `docker compose up -d --build` поднимает
-и БД, и API (API ждёт `service_healthy` у БД), но миграции и сиды выполняются
-отдельно — в образе только production-зависимости, а `sequelize-cli` нужен из
-`devDependencies`.
+и БД, и API (API ждёт `service_healthy` у БД), а также весь стек мониторинга
+(Prometheus, Alertmanager, Grafana) с provisioning из репозитория, но миграции и
+сиды выполняются отдельно — в образе только production-зависимости, а
+`sequelize-cli` нужен из `devDependencies`.
 
 ```bash
 # 1. поднять контейнеры (БД — именованный том pgdata, API ждёт healthcheck БД)
@@ -60,8 +64,28 @@ docker compose restart api
 ```
 
 Шаги 3 и 4 выполняются с хостов с тем же `.env`, что и у compose: `DB_HOST=localhost`
-(для контейнера — `db`). Адреса: API на `:3000`, БД на `${DB_PORT}`, `GET /api/health`
-возвращает `{"status":"ok"}`.
+(для контейнера — `db`). Адреса: API на `:3000`, БД на `${DB_PORT}`,
+`GET /api/health/ready` возвращает `{"data":{"ready":true}}`.
+
+> `DB_PORT` в `.env` — это порт БД **на хосте**: compose публикует наружу
+> `${DB_PORT}:5432`. Если на машине уже работает свой PostgreSQL на 5432, контейнер
+> не сможет занять порт, а хостовые `db:migrate`/`db:seed:all` (которые ходят на
+> `localhost:${DB_PORT}`) попадут в чужую базу и упадут с ошибкой пароля. В таком
+> случае поставьте свободный порт, например `DB_PORT=5434`, и пересоздайте БД:
+> `docker compose up -d --force-recreate db`.
+
+Адреса стека мониторинга (порты меняются переменными `PORT`, `PROMETHEUS_PORT`,
+`ALERTMANAGER_PORT`, `GRAFANA_PORT`):
+
+| Сервис       | Адрес                    | Учётные данные              |
+| ------------ | ------------------------ | --------------------------- |
+| API          | http://localhost:3000    | —                           |
+| Prometheus   | http://localhost:9090    | —                           |
+| Grafana      | http://localhost:3001    | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` (по умолчанию `admin` / `admin`) |
+| Alertmanager | http://localhost:9093    | —                           |
+
+Дашборд и источник данных в Grafana появляются сами при старте: ручная настройка
+после развёртывания не требуется (см. «Мониторинг»).
 
 Откат и повторное применение: `npx sequelize-cli db:migrate:undo` откатывает
 последнюю миграцию, `npx sequelize-cli db:migrate:undo:all` — все.
@@ -92,8 +116,13 @@ docker compose restart api
 
 Простая страница `public/index.html` раздаётся тем же сервером и открывается в браузере: `http://localhost:3000/`. Она работает с API через `fetch` (тот же origin, CORS не нужен). Страницу также можно открыть как локальный файл (`file://`) — `Origin: null` разрешён CORS-конфигурацией:
 
+- **Вход** — форма логина и кнопка выхода. Access-токен хранится только в памяти
+  страницы, поэтому после перезагрузки сессия восстанавливается по refresh-cookie
+  через `POST /api/auth/refresh`; если refresh не проходит, открывается форма входа и
+  защищённые запросы не выполняются.
 - **Список заявок** — таблица с фильтрами по статусу, приоритету и оборудованию, постраничная навигация.
-- **Форма создания** — выбор оборудования из `GET /api/equipment`, название, описание, приоритет, планируемая дата; создание через `POST /api/requests`.
+- **Форма создания** — выбор оборудования из `GET /api/equipment`, название, описание, приоритет, планируемая дата; создание через `POST /api/requests`. Форма и кнопки смены статуса показываются только ролям `technician` и `admin`, у `viewer` их нет.
+- **Истёкший токен** — при 401 страница один раз продлевает сессию и повторяет запрос; повторная неудача возвращает на форму входа.
 - Смены статуса, назначения исполнителей, сводок и отчётов на странице нет — они доступны только через API.
 - Ошибки API (422 с деталями, 404, 409, 429) выводятся в блоке сообщений.
 
@@ -117,8 +146,30 @@ docker compose restart api
 | `DB_PORT`                 | `5432`                                           | Порт PostgreSQL                                             |
 | `DB_NAME`                 | `maintenance`                                    | Рабочая база                                                |
 | `DB_USER` / `DB_PASSWORD` | —                                                | Учётные данные PostgreSQL                                   |
-| `DB_POOL_MAX`             | `10`                                             | Зарезервировано (пул Sequelize пока не настраивается кодом) |
-| `TEST_DB_NAME`            | `${DB_NAME}_test`                                | База автотестов (имя обязано содержать `test`)              |
+| `DB_POOL_MAX`             | `10`                                             | Максимум соединений в пуле Sequelize                            |
+| `TEST_DB_NAME`            | `${DB_NAME}_test`                                | База автотестов (имя обязательно содержать `test`)              |
+| `JWT_SECRET`              | — (обязателен в production)                      | Секрет подписи access-токенов                                   |
+| `JWT_REFRESH_SECRET`      | значение `JWT_SECRET`                            | Секрет подписи refresh-токенов                                  |
+| `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL_MS` | `15m` / `604800000`                   | Время жизни access-токена и refresh-токена                       |
+| `BCRYPT_ROUNDS`           | `12`                                             | Стоимость хеширования паролей                                   |
+| `REFRESH_COOKIE_NAME`      | `refresh_token`                                  | Имя refresh-cookie                                              |
+| `COOKIE_SAME_SITE` / `COOKIE_SECURE` | `lax` / `true` в production          | Атрибуты refresh-cookie                                          |
+| `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX` | `900000` / `10`              | Ограничение неудачных попыток входа                              |
+| `SEED_ADMIN_PASSWORD`, `SEED_TECH_PASSWORD`, `SEED_VIEWER_PASSWORD` | демо-значения | Пароли демонстрационных пользователей сида        |
+| `HEALTH_DB_TIMEOUT_MS`    | `2000`                                           | Таймаут проверки БД в `/api/health/ready` (мс)                   |
+| `SHUTDOWN_TIMEOUT_MS`     | `10000`                                          | Предел ожидания при остановке, дальше — принудительный выход    |
+| `METRICS_COLLECT_DEFAULT` | `true`                                           | Собирать ли стандартные `process_*`/`nodejs_*` метрики          |
+| `METRICS_APPLIED_TOP_N`   | `20`                                             | Сколько площадок и оборудования попадает в прикладные метрики   |
+| `METRICS_CACHE_MS`        | `5000`                                           | Кэш результатов агрегатов PostgreSQL на одно окно скрейпа      |
+| `DOCS_ENABLED`            | `true`                                           | Включён ли `/api/docs`                                           |
+| `DOCS_REQUIRE_AUTH`       | `false`                                          | Требовать access-токен для `/api/docs`                          |
+| `PROMETHEUS_PORT`         | `9090`                                           | Порт Prometheus на хосте                                        |
+| `ALERTMANAGER_PORT`       | `9093`                                           | Порт Alertmanager на хосте                                      |
+| `GRAFANA_PORT`            | `3001`                                           | Порт Grafana на хосте                                           |
+| `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | `admin` / `admin`             | Учётные данные Grafana (пароль стоит сменить)                   |
+| `PROMETHEUS_RETENTION`    | `15d`                                            | Хранение истории метрик в Prometheus                            |
+| `ALERT_EMAIL_TO` / `ALERT_EMAIL_FROM` | `ops@example.com` / `alerts@example.com` | Адресат оповещения Alertmanager                       |
+| `ALERT_SMTP_HOST` / `ALERT_SMTP_PORT` / `ALERT_SMTP_USER` / `ALERT_SMTP_PASSWORD` | `localhost` / `25` / `alerts` / `alerts` | SMTP для отправки оповещений                   |
 
 Параметры подключения (`host`, `port`, `database`, `user`, `password`) читаются
 из окружения в `src/config/sequelize.config.cjs` и передаются в `new Sequelize(...)`
@@ -126,8 +177,11 @@ docker compose restart api
 `NODE_ENV=production` (в Docker) используется профиль `development` с теми же
 переменными `DB_*` — отдельной секции `production` в конфиге нет.
 `TEST_DB_NAME` читается конфигом, но в `.env.example` отсутствует (нужен только
-автотестам); `DB_POOL_MAX` есть в `.env.example`, но кодом пока не читается —
-это известное расхождение с требованием «параметры пула из окружения».
+автотестам). `DB_POOL_MAX` передаётся в пул Sequelize и виден в метриках
+`maintenance_db_pool_in_use` / `maintenance_db_pool_max` / `maintenance_db_pool_waiting`.
+Все переменные
+приложения перечислены в `.env.example`, секретов в репозитории нет: `.env`
+не отслеживается, а `JWT_SECRET` в production обязателен.
 
 Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из того же
 `.env` и передаёт их сервису `db`, а сервису `api` — `NODE_ENV`, `DB_*`;
@@ -137,11 +191,55 @@ Compose читает `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PORT` из
 
 Все маршруты доступны после префикса `/api`.
 
-### Health
+### Health и эксплуатационные endpoints
 
-| Метод | Путь      | Описание       | Коды ответа |
-| ----- | --------- | -------------- | ----------- |
-| GET   | `/health` | Статус сервиса | 200         |
+| Метод | Путь                   | Назначение                                              | Коды ответа |
+| ----- | ---------------------- | ------------------------------------------------------- | ----------- |
+| GET   | `/api/health/live`     | Жизнеспособность процесса (БД не проверяется)           | 200         |
+| GET   | `/api/health/ready`    | Готовность к обслуживанию, включая доступность БД       | 200, 503    |
+| GET   | `/api/health`          | Сводное состояние (тот же результат готовности)         | 200, 503    |
+| GET   | `/api/health/metrics`  | Прикладные агрегаты из PostgreSQL в JSON                | 200         |
+| GET   | `/metrics`             | Метрики приложения для системы мониторинга (Prometheus) | 200         |
+| GET   | `/api/docs`            | Интерактивная документация OpenAPI (Swagger UI)         | 200         |
+| GET   | `/api/docs/openapi.json` | Спецификация OpenAPI 3.0.3                            | 200         |
+
+Токен для этих эндпоинтов не нужен: они должны работать, когда пользователи
+ещё не могут войти в систему.
+
+`/api/health/ready` возвращает 503, если база данных недоступна дольше
+`HEALTH_DB_TIMEOUT_MS` или процесс завершает работу:
+
+```json
+{ "data": { "ready": false, "status": "not_ready", "checks": { "database": { "status": "error", "error": "timeout 2000ms" } } } }
+```
+
+При недоступной БД сервис не падает молча: `docker compose ps api` показывает
+контейнер как `unhealthy` (healthcheck вызывает именно `/api/health/ready`),
+а Prometheus поднимает алерт `ApiNotReady`.
+
+### Аутентификация и роли
+
+| Метод | Путь                  | Назначение                                | Коды ответа |
+| ----- | --------------------- | ----------------------------------------- | ----------- |
+| POST  | `/api/auth/register`  | Регистрация пользователя                  | 201, 409, 422 |
+| POST  | `/api/auth/login`     | Вход: access-токен + refresh-cookie       | 200, 401, 429 |
+| POST  | `/api/auth/refresh`   | Обновление пары токенов по refresh-cookie | 200, 401    |
+| POST  | `/api/auth/logout`    | Выход: отзыв refresh-токена               | 204         |
+| GET   | `/api/auth/me`        | Текущий пользователь                      | 200, 401    |
+
+Все защищённые endpoints требуют заголовок `Authorization: Bearer <accessToken>`.
+Access-токен живёт 15 минут, refresh хранится в HttpOnly-cookie и при
+`/api/auth/refresh` ротируется (старый становится недействительным).
+
+| Роль         | Права                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `viewer`     | Чтение справочников, заявок, истории и отчётов                                               |
+| `technician` | Права `viewer` + создание и редактирование заявок + смена статуса заявок, на которые назначен |
+| `admin`      | Все операции: оборудование, назначение бригад, удаление записей, любые статусы               |
+
+`technician` без связи со специалистом (`technicianId` при регистрации) не сможет
+менять статус ни одной заявки: 403 `NOT_ASSIGNED`. Роль читается из БД на каждый
+запрос, поэтому её понижение действует немедленно.
 
 ### Оборудование
 
@@ -807,28 +905,207 @@ curl "http://localhost:3000/api/reports/equipment-load?page=1&limit=20&minReques
 - **Лимит тела** — `express.json({ limit: '100kb' })`.
 - **Request id** — значение заголовка `X-Request-Id` принимается от внешних сервисов, иначе генерируется, возвращается в ответе и прокидывается во все логи (pino + `AsyncLocalStorage`).
 - **Логирование** — структурные JSON-логи в stdout (в dev — `pino-pretty`), поля `authorization`, `cookie`, `password`, `token` автоматически редактируются (`redact`). В контейнере сбором/доставкой логов занимается инфраструктура.
+- **Операционные endpoints** — `GET /api/health/live`, `/api/health/ready`, `/api/health`, `/api/health/metrics`, `/metrics` и `/api/docs` намеренно доступны без access-токена: системе мониторинга они нужны тогда, когда пользователи ещё не могут войти. `/api/health/metrics` отдаёт агрегированные данные без персональной информации, а `/metrics` — только счётчики и тайминги.
+- **Границы сетевого доступа** — порты Prometheus, Alertmanager и Grafana публикуются на хост только для рабочего места; в закрытом контуре их достаточно убрать из `ports` в `docker-compose.yml` (сам скрейп идёт по внутренней сети compose). Пароль администратора Grafana задаётся через `GRAFANA_ADMIN_PASSWORD`, учётные данные PostgreSQL — через `DB_USER`/`DB_PASSWORD`.
 
 ## Логи
 
 Сервис логирует через pino: старт/стоп, каждый HTTP-запрос (метод, url, статус, длительность, `reqId`) и бизнес-события (`equipment_created`, `request_status_changed` и т.д.) с привязкой к `reqId`. Уровни: `fatal`, `error` (5xx), `warn` (4xx), `info`, `debug` (выключен в production). Пример поиска всех записей одного запроса: `grep '"reqId":"<uuid>"' app.log`.
+
+## Мониторинг
+
+Стек мониторинга входит в `docker compose` и поднимается вместе с приложением:
+
+```bash
+docker compose up -d --build          # api, db, prometheus, alertmanager, grafana
+docker compose ps                     # все сервисы должны быть up (healthy)
+```
+
+Конфигурация целиком лежит в репозитории, ручная настройка после развёртывания
+не требуется:
+
+| Файл                                        | Назначение                                                        |
+| ------------------------------------------- | ----------------------------------------------------------------- |
+| `monitoring/prometheus/prometheus.yml`      | цели скрейпа (API раз в 15 с), источник алертов                   |
+| `monitoring/prometheus/alerts.yml`          | правила оповещений и пороги                                       |
+| `monitoring/alertmanager/alertmanager.yml`  | шаблон маршрутизации и получателя оповещений (значения `@@...@@`)    |
+| `monitoring/alertmanager/render-config.sh`  | подстановка SMTP-переменных, проверка через `amtool`, запуск Alertmanager |
+| `monitoring/grafana/provisioning/datasources/prometheus.yml` | источник данных Grafana (`uid: prometheus`)        |
+| `monitoring/grafana/provisioning/dashboards/dashboards.yml`   | провайдер дашбордов из репозитория |
+| `monitoring/grafana/dashboards/maintenance-overview.json`     | описание дашборда (восстанавливается при развёртывании с нуля)     |
+
+Дашборд собирается скриптом `scripts/build-dashboard.mjs` (JSON в репозитории —
+результат его работы), Grafana подхватывает изменения сама раз в 30 секунд.
+
+### Метрики приложения (`GET /metrics`)
+
+| Метрика                                   | Тип      | Метки                  | Описание                                                     |
+| ----------------------------------------- | -------- | ---------------------- | ------------------------------------------------------------ |
+| `http_requests_total`                     | counter  | `method`, `route`, `status` | Число запросов по маршрутам и кодам ответа              |
+| `http_errors_total`                       | counter  | `method`, `route`, `status_class` | Ответы 4xx и 5xx                              |
+| `http_request_duration_seconds`           | histogram | `method`, `route`      | Длительность обработки (p50/p95/p99 считаются в Grafana)     |
+| `service_up`                              | gauge    | —                      | Результат последней проверки готовности: 1 — БД доступна     |
+| `maintenance_requests_created_total`      | counter  | `priority`             | Созданные заявки                                              |
+| `maintenance_requests_by_status`          | gauge    | `status`               | Заявки по статусам                                            |
+| `maintenance_requests_by_priority`        | gauge    | `priority`             | Заявки по приоритетам                                         |
+| `maintenance_requests_by_site`            | gauge    | `site_id`, `site_name` | Открытые заявки по площадкам                                 |
+| `maintenance_equipment_open_requests`     | gauge    | `equipment_id`, `equipment_name` | Открытые заявки по оборудованию (top-20)          |
+| `maintenance_average_closure_hours`       | gauge    | —                      | Среднее время закрытия заявки, часы                          |
+| `maintenance_overdue_planned_works`       | gauge    | —                      | Просроченные плановые работы (`planned_at` в прошлом)       |
+| `maintenance_db_pool_in_use` / `_max` / `_waiting` | gauge | —               | Занятые, максимальные и ожидающие соединения пула Sequelize    |
+| `process_*`, `nodejs_*`                   | —        | —                      | Стандартный набор prom-client (CPU, память, event-loop)      |
+
+Метка `route` содержит шаблон маршрута (`/api/requests/:id`), а не фактический
+URL: иначе каждый id заявки создавал бы отдельную серию. Прикладные метрики
+считаются агрегатами в PostgreSQL при каждом скрейпе (с коротким кэшем
+`METRICS_CACHE_MS`), поэтому один datasource Prometheus покрывает и технические,
+и прикладные панели. Те же агрегаты доступны в JSON на `GET /api/health/metrics`.
+
+### Панели дашборда «Weather Maintenance — API и заявки»
+
+Технические: доступность сервиса (`up`), готовность (БД), интенсивность запросов
+(rps), доля ответов 4xx и 5xx, время ответа p50/p95/p99, самые нагруженные
+маршруты, соединения с БД.
+
+Прикладные: заявки по статусам, заявки по приоритетам, нагрузка на оборудование,
+открытые заявки по площадкам, среднее время закрытия заявки, просроченные
+плановые работы. Всего 14 панелей; состояние алертов в дашборд не выводится —
+см. «Оповещения» ниже.
+
+### Оповещения
+
+Правила (`monitoring/prometheus/alerts.yml`):
+
+| Алерт                  | Условие                                              | `for` | Важность |
+| ---------------------- | ---------------------------------------------------- | ----- | -------- |
+| `ApiUnavailable`       | `up{job="weather-maintenance-api"} == 0`              | 2 мин | critical |
+| `ApiNotReady`          | `service_up == 0` (недоступна БД или идёт остановка)  | 3 мин | critical |
+| `HighServerErrorRate`  | доля ответов 5xx выше 5%                             | 5 мин | warning  |
+| `HighLatency`          | p95 времени ответа выше 1 с                          | 10 мин | warning |
+
+Канал оповещения один — **почта**. Схема: Prometheus оценивает правила →
+Alertmanager группирует и отправляет письмо на `ALERT_EMAIL_TO`. Grafana в этом
+схеме только показывает метрики, собственных правил и получателей у неё нет
+(`GF_UNIFIED_ALERTING_ENABLED=false`, `GF_ALERTING_ENABLED=false` в
+`docker-compose.yml`), поэтому в интерфейсе Grafana раздела Alerting нет.
+
+Где смотреть состояние:
+
+| Что | Где |
+| --- | --- |
+| Состояние правил (pending/firing) | http://localhost:9090/rules |
+| Сработавшие алерты | http://localhost:9090/alerts |
+| Очередь и отправка писем | http://localhost:9093 |
+| Метрики и панели | http://localhost:3001 (дашборд) |
+
+Оповещение по почте включается переменными `ALERT_SMTP_*`, `ALERT_EMAIL_TO` и
+`ALERT_SMTP_REQUIRE_TLS` (после изменения нужен
+`docker compose up -d --force-recreate alertmanager`). Реальные адрес и пароль
+задаются в `.env` — он не отслеживается git; в `render-config.sh` остаются только
+безопасные значения по умолчанию.
+
+Для Mail.ru нужен порт `587` с `ALERT_SMTP_REQUIRE_TLS=true` (STARTTLS). Порт `465`
+не подойдёт: это неявный TLS, а Alertmanager умеет только STARTTLS после EHLO.
+
+`ALERT_EMAIL_FROM` должен совпадать с `ALERT_SMTP_USER` либо быть алиасом,
+подтверждённым в почтовом сервисе. Mail.ru отклоняет чужой адрес отправителя:
+`send RCPT command: 501 sender address must match authenticated user` — Alertmanager
+при этом повторяет попытку и молча не доставляет письмо. Свой адрес отправителя
+(`weather@mail.ru`) сначала нужно добавить в Mail.ru как алиас.
+
+Правки `.env` применяются только при пересоздании контейнера
+(`docker compose up -d --force-recreate alertmanager`): рендерер конфигурации
+запускается на старте, поэтому после изменения файла перезапустите сервис.
+
+Проверка отправки без реальной аварии (приходит письмо на `ALERT_EMAIL_TO`):
+
+```bash
+docker compose exec -T alertmanager amtool alert add TestEmailCheck severity=warning   job=weather-maintenance-api   --annotation=summary='Проверка почтового оповещения'
+# ждём group_wait (30s) и смотрим результат
+curl -s localhost:9093/metrics | grep alertmanager_notifications_total
+docker compose logs alertmanager --since 2m | grep -i notify
+```
+
+`alertmanager_notifications_total{integration="email"}` растёт, а
+`alertmanager_notifications_failed_total` остаётся нулевым — письмо ушло.
+Тестовый алерт снимается так:
+
+```bash
+curl -X POST localhost:9093/api/v2/alerts -H 'Content-Type: application/json'   -d '[{"labels":{"alertname":"TestEmailCheck"},"annotations":{},"endsAt":"2020-01-01T00:00:00Z"}]'
+```
+
+Alertmanager не раскрывает переменные окружения в файле конфигурации, поэтому
+шаблон `alertmanager.yml` рендерится при старте контейнера
+(`monitoring/alertmanager/render-config.sh`), проверяется `amtool check-config` и
+только после этого запускается сам Alertmanager. Неподставленный токен
+`@@...@@` или ошибка в конфигурации останавливают старт, а не приводят к молчаливой
+потере оповещений. Без работающего SMTP сервера правила всё равно срабатывают и
+видны в Prometheus, но письма не отправляются — в этом случае в логах
+Alertmanager будет `dial tcp ...:25: connect: connection refused`, что означает
+«SMTP не настроен», а не ошибку конфигурации.
+
+### Порядок действий при срабатывании
+
+1. **`ApiUnavailable`** — сервис не отвечает два окна подряд.
+   ```bash
+   docker compose ps api
+   docker compose logs --tail=200 api
+   curl -s localhost:3000/api/health/live    # процесс жив?
+   curl -s localhost:3000/api/health/ready   # БД доступна?
+   docker compose restart api                # после устранения причины
+   ```
+2. **`ApiNotReady`** — процесс жив, но не обслуживает трафик: почти всегда
+   недоступна БД.
+   ```bash
+   docker compose ps db
+   docker compose logs --tail=200 db
+   docker compose exec db pg_isready -U postgres -d maintenance
+   ```
+   Если БД подняли — приложение вернётся в готовность само, перезапуск не нужен.
+3. **`HighServerErrorRate`** — доля ответов 5xx выше 5%.
+   Откройте панель «Самые нагруженные маршруты» и посмотрите, какой маршрут даёт
+   5xx; затем в логах найдите его `requestId` (`grep '"reqId":"<uuid>"' app.log`)
+   и причину: чаще всего это ошибка валидации данных или недоступность внешнего
+   API. Проверьте пул БД: `maintenance_db_pool_in_use` на верхней границе
+   `maintenance_db_pool_max` и ненулевой `maintenance_db_pool_waiting` означают,
+   что запросы ждут соединения — ищите медленные запросы или увеличьте `DB_POOL_MAX`.
+4. **`HighLatency`** — p95 выше секунды. Сравните время ответа с загрузкой пула БД
+   и числом заявок; при росте `maintenance_overdue_planned_works` проверьте, не
+   копится ли работа, которую некому закрыть.
+5. После устранения причины алерт закрывается сам (состояние `resolved` видно в
+   Prometheus и Alertmanager). Если `ApiUnavailable` не закрылся, проверьте, что
+   метрики снова снимаются: http://localhost:9090/targets.
 
 ## Структура проекта
 
 ```
 weather-maintenance-api/
 ├── er_diagramma.png               # ER-диаграмма схемы БД (раздел «Модель данных»)
-├── docker-compose.yml             # сервис api + PostgreSQL, том pgdata, healthcheck-и
+├── docker-compose.yml             # api, PostgreSQL, prometheus, alertmanager, grafana, healthcheck-и
 ├── Dockerfile                     # образ приложения (только production-зависимости)
 ├── .env                           # локальные параметры (создаётся из .env.example)
 ├── docs/
 │   └── postman/collection.json   # Postman-коллекция (эндпоинты + негативные сценарии, pm.test)
+│                                 # спецификация OpenAPI 3.0.3 отдаётся из /api/docs/openapi.json
+├── monitoring/
+│   ├── prometheus/prometheus.yml # цели скрейпа
+│   ├── prometheus/alerts.yml     # правила оповещений
+│   ├── alertmanager/
+│   │   ├── alertmanager.yml      # шаблон конфигурации Alertmanager (токены @@...@@)
+│   │   └── render-config.sh      # подстановка SMTP-переменных и запуск Alertmanager
+│   └── grafana/
+│       ├── dashboards/maintenance-overview.json # описание дашборда
+│       └── provisioning/         # datasource и провайдер дашбордов
+├── scripts/build-dashboard.mjs   # генератор dashboard JSON
 ├── public/
-│   ├── index.html                # простая веб-страница: список заявок, фильтры, форма создания
-│   └── app.js                    # логика страницы (fetch к API)
+│   ├── index.html                # веб-страница: вход, список заявок, фильтры, форма создания
+│   └── app.js                    # логика страницы (fetch, refresh-токен, роли)
 ├── tests/
 │   ├── globalSetup.js             # создаёт БД maintenance_test и накатывает миграции
 │   ├── helpers/db.js              # resetTestDb, createTechnician, createPassport, счётчики строк
-│   ├── health.test.js             # health, 404, X-Request-Id, CORS
+│   ├── health.test.js             # health live/ready/metrics, 404, X-Request-Id, CORS
+│   ├── metrics.test.js            # /metrics и прикладные метрики
+│   ├── docs.test.js               # OpenAPI: спецификация, Swagger UI, 404
 │   ├── equipment.test.js          # CRUD оборудования, фильтры, 409/404/422, каскад, погода (fetch мокается)
 │   ├── requests.test.js           # CRUD заявок, переходы статусов, неизменяемость equipmentId
 │   ├── requestCrew.test.js        # назначения, снятие, правило бригады, история статусов
@@ -844,14 +1121,16 @@ weather-maintenance-api/
 │   ├── config/sequelize.config.cjs # подключения к БД (development, test)
 │   ├── controllers/              # обработчики запросов (equipment, requests, sites, reports)
 │   ├── errors/                   # AppError, NotFoundError, ConflictError, ValidationError, BadRequestError
-│   ├── middlewares/              # validate, notFound, errorHandler
+│   ├── metrics/                  # регистрация метрик (index) и прикладные агрегаты (applied)
+│   ├── docs/openapi.js           # спецификация OpenAPI
+│   ├── middlewares/              # validate, notFound, errorHandler, metrics
 │   ├── migrations/               # миграции схемы и перенос данных из Postman-коллекции
 │   ├── seeders/                  # демонстрационные данные (площадки, оборудование, техники, заявки)
 │   ├── models/                   # Sequelize-модели и ассоциации
-│   ├── repositories/             # доступ к данным (equipment, requests, sites, reports)
-│   ├── routes/                   # index, health, equipment, requests, sites, reports
-│   ├── services/                 # бизнес-логика (equipment, requests, sites, reports)
-│   ├── utils/                    # id, logger (pino), context (AsyncLocalStorage), paging (границы пагинации)
+│   ├── repositories/             # доступ к данным (equipment, requests, sites, reports, technicians)
+│   ├── routes/                   # index, health, auth, docs, equipment, requests, sites, reports, technicians
+│   ├── services/                 # бизнес-логика (equipment, requests, sites, reports, auth, metrics)
+│   ├── utils/                    # id, logger (pino), context (AsyncLocalStorage), paging, lifecycle
 │   ├── validators/               # Zod-схемы (equipmentSchemas, requestsSchemas, querySchemas)
 │   ├── app.js                    # сборка Express-приложения
 │   └── server.js                 # запуск сервера (graceful shutdown)
@@ -863,8 +1142,8 @@ weather-maintenance-api/
 
 ## Автотесты (Jest + Supertest)
 
-Запуск: `npm test` (107 сценариев, `--runInBand`; требует Node с поддержкой
-`--experimental-vm-modules` и запущенный PostgreSQL).
+Запуск: `npm test` (184 сценария в 11 наборах, `--runInBand`; требует Node с
+поддержкой `--experimental-vm-modules` и запущенный PostgreSQL).
 
 ```bash
 npm test
@@ -878,12 +1157,16 @@ npm test
 
 Покрытие основных сценариев:
 
-- **Health / маршрутизация** — `GET /api/health`, 404 неизвестного маршрута, проброс и генерация `X-Request-Id`, CORS (включая `Origin: null` и same-origin).
+- **Health / маршрутизация** — `GET /api/health/live`, `/api/health/ready` (503 при недоступной БД и во время остановки), совместимый `/api/health`, `GET /api/health/metrics`, 404 неизвестного маршрута, проброс и генерация `X-Request-Id`, CORS (включая `Origin: null` и same-origin).
+- **Метрики** — `GET /metrics` в формате Prometheus: наличие стандартных серий `http_requests_total`, `http_errors_total`, `http_request_duration_seconds`, `process_*`/`nodejs_*`, прикладных `maintenance_requests_*` и `service_up`; значения счётчиков меняются после запроса; собственный скрейп `/metrics` не учитывается; `route` в метках содержит шаблон, а не конкретный id.
+- **Документация** — `GET /api/docs/openapi.json` отдаёт валидную спецификацию OpenAPI 3.0.3 со всеми маршрутами, `GET /api/docs` отдаёт Swagger UI, 404 для неизвестного пути документации.
 - **Оборудование** — CRUD (201 с defaults и `Location`), пагинация, фильтры `status`/`type` и сортировка по `sortBy` средствами БД, поиск `search` через `ILIKE` по имени и серийному номеру (регистронезависимо, с экранированием `%`/`_`/`\`), 409 `SERIAL_CONFLICT`, 409 `HAS_OPEN_REQUESTS` (открытая заявка) и его отсутствие при `rejected`, каскадное удаление паспорта, заявок, назначений и истории при удалении оборудования, сохранность площадки и специалистов, 404, 422 `VALIDATION_ERROR` с `details`, пагинация `GET /equipment/:id/requests`. Границы пагинации: 400 `INVALID_PAGINATION` на `limit=101`, `limit=abc`, `offset=10001`, приём граничных `limit=100&offset=10000` и эквивалентность `offset=1&limit=1` и `page=2&limit=1`, при этом `status=nope` остаётся 422. Прогноз `/weather` проверяется с замоканным `global.fetch` (без обращения к Open-Meteo).
 - **Заявки** — CRUD, неизменяемость `equipmentId` при PATCH, приём и возврат `plannedLaborHours`, допустимые переходы статусов (`new → in_progress → done`, `new → rejected`), новый статус в ответе `PATCH /:id/status` совпадает с сохранённым, 409 `INVALID_STATUS_TRANSITION`, 404, 422; список: фильтры `status`/`priority`/`equipmentId`/`from`/`to`, сортировка по `sortBy`, пагинация с корректным `meta.total`, 400 `INVALID_PAGINATION` при выходе `limit`/`offset` за диапазон.
 - **Назначения и правило бригады** — 201 с составом бригады и минимальными полями исполнителя, замена прежнего состава (проверяется и по БД), повторное включение того же специалиста, 422 `VALIDATION_ERROR` с `field: "role"` и откатом прежнего состава при нуле и при двух `lead`, 404 на неизвестного специалиста, 422 на пустой массив, объект вместо массива, неверную роль, невалидный uuid, дубль в одном запросе и больше 20 записей; снятие 204/404 и 409 `ASSIGNEE_REQUIRED` на последнем исполнителе заявки в работе; переход в `in_progress` без бригады — 409 без изменения статуса и истории.
 - **История статусов** — пустая у новой заявки, хронологический порядок, `author: "api"`, отсутствие записей чужих заявок и дублей, 404, 422, каскадное удаление истории и назначений вместе с заявкой; 400 `INVALID_PAGINATION` на `limit=0`, `limit=101` и `offset=10001`.
 - **Аналитика** — сводка площадки: нули и `null` без заявок, подсчёт по статусам и по приоритетам, среднее только по `done` с округлением до одного знака, изоляция площадок; отчёт нагрузки: оборудование без заявок через `LEFT JOIN`, счётчики по статусам, сумма `plannedLaborHours`, ISO-даты последней заявки и последнего обслуживания (`null` без закрытых заявок), фильтры периода `from`/`to` и `minRequests` с влиянием на `meta.total`, сортировка по `sortBy` и по умолчанию `requestsOpen DESC, name ASC`, пагинация, 422 на `minRequests=-1` и 400 `INVALID_PAGINATION` на `limit=0`, `limit=101`, `offset=10001`, `offset=-1`, а также на производном смещении `page=200&limit=100`; эквивалентность `offset=4&limit=2` и `page=3&limit=2`.
+- **Аутентификация и роли** — регистрация с ролью по умолчанию `viewer` и с явной ролью, привязка `technicianId` к специалисту, вход с выдачей access-токена и refresh-cookie, обновление и ротация refresh-токена, выход с отзывом cookie, `GET /api/auth/me`, неверный пароль, отказ входа несуществующего пользователя, 401 на защищённом маршруте без токена, 403 для чужой роли, запрет `status` в общем `PATCH /api/requests/:id` (422), смена статуса назначенной заявки и 403 `NOT_ASSIGNED` для неназначенной.
+- **Справочник специалистов** — `GET /api/technicians` и `GET /api/technicians/:1` под `requireAuth`: пагинация, `search`, `specialization`, сортировка по `fullName`, `email`, `specialization`, `createdAt`, 400 `INVALID_PAGINATION`, 422 на неизвестный фильтр, 404 на несуществующего специалиста.
 - **Rate limit** — отдельный файл переопределяет `RATE_LIMIT_MAX=3` до импорта приложения и проверяет 429 `RATE_LIMIT_EXCEEDED`. В остальных наборах лимит поднят в `jest.setup.cjs`, иначе объём запросов упирался бы в 429.
 
 Между тестами таблицы очищаются через `resetTestDb()` (`tests/helpers/db.js`),
@@ -891,4 +1174,19 @@ npm test
 
 ## Postman
 
-Импортируйте `docs/postman/collection.json`. Коллекция покрывает все эндпоинты, передаёт id сущностей между запросами через переменные и содержит негативные сценарии (422, 404, 409, 429) с автотестами `pm.test`.
+Импортируйте `docs/postman/collection.json`. Коллекция покрывает все эндпоинты, передаёт id сущностей между запросами через переменные и содержит негативные сценарии (401, 422, 404, 409, 429) с автотестами `pm.test`.
+
+Порядок запуска: сначала раздел **«0. Аутентификация» → «Вход администратором»** —
+он сохраняет access-токен в переменную коллекции `accessToken`, и все остальные
+запросы (у которых на уровне коллекции включён Bearer) авторизуются сами. Учётные
+данные по умолчанию — из сидов: `admin@example.com` / `admin-demo-2026`
+(для проверки прав `viewer@example.com` / `viewer-demo-2026`,
+`tech@example.com` / `tech-demo-2026` — их можно задать переменными `loginEmail`
+и `loginPassword`). Раздел **«8. Мониторинг и документация»** дополнительно
+запрашивает Prometheus: переменная `prometheusUrl` (по умолчанию
+`http://localhost:9090`).
+
+Разделы «Аутентификация», «Специалисты» и «Мониторинг и документация»
+генерируются скриптом `node scripts/update-postman.mjs` (запуск идемпотентный) —
+он нужен, если изменились auth-маршруты, справочник специалистов или
+эксплуатационные endpoints.

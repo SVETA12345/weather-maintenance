@@ -1,0 +1,39 @@
+# Конфигурация Prometheus для стека weather-maintenance.
+# Файл в репозитории: после развёртывания с нуля ручная настройка не требуется.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: weather-maintenance
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # Прикладной сервис: экспортирует технические и прикладные метрики.
+  - job_name: weather-maintenance-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:3000']
+        labels:
+          env: docker
+
+  # Метрики самих сервисов мониторинга.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['alertmanager:9093']
+
+  - job_name: grafana
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['grafana:3000']

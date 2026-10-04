@@ -1,0 +1,15 @@
+# Дашборды берутся из репозитория: описание лежит в monitoring/grafana/dashboards
+# и восстанавливается при развёртывании с нуля без ручных действий.
+apiVersion: 1
+
+providers:
+  - name: weather-maintenance
+    orgId: 1
+    folder: Weather Maintenance
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
