@@ -25,6 +25,7 @@ COPY --from=deps /app/node_modules ./node_modules
 # Копируем исходники
 COPY package.json ./
 COPY src ./src
+COPY .sequelizerc ./
 # Статика веб-страницы обслуживания: express отдаёт public/ через свой location.
 COPY public ./public
 
