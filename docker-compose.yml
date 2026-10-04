@@ -30,7 +30,10 @@ services:
     container_name: weather-maintenance-api
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      # Прямой доступ к API оставлен только с рабочего компьютера. Иначе клиент
+      # мог бы обратиться к приложению в обход nginx и подделать X-Forwarded-For,
+      # обойдя ограничение по реальному IP (rate limit, логи, allowlist /metrics).
+      - "127.0.0.1:${PORT:-3000}:3000"
     env_file:
       - .env
     environment:
@@ -41,6 +44,9 @@ services:
       DB_NAME: ${DB_NAME:-maintenance}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      # Ровно один доверенный хоп: nginx. При этом rate limit и логи считают
+      # реальный IP клиента, но подделанный X-Forwarded-For не проходит.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
     depends_on:
       db:
         condition: service_healthy
@@ -58,8 +64,8 @@ services:
       start_period: 10s
 
   # Мониторинг подключается к API по внутренней сети compose (/metrics не требует
-  # access-токена и не закрыт rate limit-ом), а порт публикуется наружу только для
-  # доступа к UI Prometheus с рабочего места.
+  # access-токена и не закрыт rate limit-ом). Наружу UI-интерфейсы публикует только
+  # nginx, и только с ограничением по адресам, поэтому прямых host-портов здесь нет.
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: weather-maintenance-prometheus
@@ -73,8 +79,6 @@ services:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
     depends_on:
       - api
     healthcheck:
@@ -109,8 +113,6 @@ services:
       ALERT_SMTP_USER: ${ALERT_SMTP_USER:-alerts}
       ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-alerts}
       ALERT_SMTP_REQUIRE_TLS: ${ALERT_SMTP_REQUIRE_TLS:-false}
-    ports:
-      - "${ALERTMANAGER_PORT:-9093}:9093"
     depends_on:
       - prometheus
 
@@ -135,8 +137,6 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
-    ports:
-      - "${GRAFANA_PORT:-3001}:3000"
     depends_on:
       - prometheus
     healthcheck:
@@ -145,6 +145,40 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  # Обратный прокси: единственная точка входа снаружи. Конфигурация из репозитория
+  # монтируется read-only, свои location и заголовки правятся в deploy/nginx.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: weather-maintenance-nginx
+    restart: unless-stopped
+    ports:
+      # Приложение, документация и статика.
+      - "${NGINX_PORT:-8080}:80"
+      # UI мониторинга на прежних портах: 9090 Prometheus, 9093 Alertmanager,
+      # 3001 Grafana. Ограничение доступа — список адресов в
+      # deploy/nginx/conf.d/monitoring-allow.inc.
+      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+      - "${GRAFANA_PORT:-3001}:3001"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+      alertmanager:
+        condition: service_started
+      grafana:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 volumes:
   pgdata:

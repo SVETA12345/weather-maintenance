@@ -25,6 +25,8 @@ COPY --from=deps /app/node_modules ./node_modules
 # Копируем исходники
 COPY package.json ./
 COPY src ./src
+# Статика веб-страницы обслуживания: express отдаёт public/ через свой location.
+COPY public ./public
 
 # Непривилегированный пользователь (в образе node:alpine уже есть user "node")
 RUN chown -R node:node /app

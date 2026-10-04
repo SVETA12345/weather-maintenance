@@ -1,48 +1,20 @@
 import { requestsRepository } from '../repositories/requestsRepository.js';
 import { equipmentRepository } from '../repositories/equipmentRepository.js';
 import { NotFoundError } from '../errors/NotFoundError.js';
-import { ConflictError } from '../errors/ConflictError.js';
 import { ValidationError } from '../errors/ValidationError.js';
-import { ForbiddenError } from '../errors/ForbiddenError.js';
 import { getLog } from '../utils/context.js';
 import { resolveOffset } from '../utils/paging.js';
 import { countCreatedRequest } from '../metrics/index.js';
-
-const TRANSITIONS = {
-    new: ['in_progress', 'rejected'],
-    in_progress: ['done', 'rejected'],
-    done: [],
-    rejected: [],
-};
+import {
+    assertAssigneeRemovable,
+    assertCanChangeStatus,
+    assertCrewAssigned,
+    assertTransitionAllowed,
+    validateCrew,
+} from './requestRules.js';
 
 // Автор в истории изменений: авторизации в сервисе нет, все изменения приходят через API.
 const HISTORY_AUTHOR = 'api';
-
-const ASSIGNEE_REQUIRED_CODE = 'ASSIGNEE_REQUIRED';
-const NO_CREW_MESSAGE = 'Нельзя перевести заявку в in_progress без назначенных исполнителей';
-const NO_LAST_ASSIGNEE_MESSAGE = 'Нельзя снять последнего исполнителя с заявки в статусе in_progress';
-const NOT_ASSIGNED_MESSAGE = 'Специалист может менять статус только тех заявок, на которые он назначен';
-
-// Правило живёт в сервисе, а не только в маршрутах: сервис должен отличать
-// «не хватает прав» от «недопустимое состояние» даже при вызове из другого места.
-function assertCanChangeStatus(actor, request) {
-    if (!actor || actor.role === 'admin') return;
-
-    if (actor.role !== 'technician') {
-        throw new ForbiddenError('Роль viewer не позволяет менять статус заявок', 'ROLE_REQUIRED');
-    }
-
-    const isAssigned =
-        actor.technicianId !== null &&
-        request.assignees.some((assignee) => assignee.technicianId === actor.technicianId);
-    if (!isAssigned) {
-        getLog().warn(
-            { event: 'status_change_forbidden', requestId: request.id, userId: actor.id, technicianId: actor.technicianId },
-            'Смена статуса заявки, на которой специалист не назначен',
-        );
-        throw new ForbiddenError(NOT_ASSIGNED_MESSAGE, 'NOT_ASSIGNED');
-    }
-}
 
 export const requestsService = {
     async list({ page, limit, offset, ...filters }) {
@@ -78,20 +50,9 @@ export const requestsService = {
     async changeStatus(id, status, actor) {
         const current = await this.getById(id);
         assertCanChangeStatus(actor, current);
+        assertTransitionAllowed(current, status);
 
-        const allowed = TRANSITIONS[current.status] ?? [];
-        if (!allowed.includes(status)) {
-            getLog().warn({ event: 'invalid_status_transition', id, from: current.status, to: status }, 'Недопустимый переход статуса');
-            throw new ConflictError(
-                `Недопустимый переход статуса: ${current.status} → ${status}`,
-                'INVALID_STATUS_TRANSITION',
-            );
-        }
-
-        if (status === 'in_progress' && current.assignees.length === 0) {
-            getLog().warn({ event: 'in_progress_without_assignees', id }, 'Перевод в in_progress без назначенных исполнителей');
-            throw new ConflictError(NO_CREW_MESSAGE, ASSIGNEE_REQUIRED_CODE);
-        }
+        if (status === 'in_progress') assertCrewAssigned(current);
 
         const updated = await requestsRepository.setStatus(id, status, { author: HISTORY_AUTHOR });
         getLog().info({ event: 'request_status_changed', id, from: current.status, to: status, userId: actor?.id }, 'Статус заявки изменён');
@@ -117,21 +78,6 @@ export const requestsService = {
             throw new NotFoundError(`Специалист(ы) ${unknown.join(', ')}`);
         }
 
-        // Правило бригады: ровно один специалист с ролью lead. Проверка выполняется
-        // внутри транзакции replaceAssignees — нарушение откатывает снятие прежних
-        // назначений и не оставляет заявку без исполнителей.
-        const validateCrew = (crew) => {
-            const leads = crew.filter((a) => a.role === 'lead');
-            if (leads.length !== 1) {
-                throw new ValidationError([
-                    {
-                        field: 'role',
-                        message: `в бригаде должен быть ровно один специалист с ролью lead, передано: ${leads.length}`,
-                    },
-                ]);
-            }
-        };
-
         try {
             return await requestsRepository.replaceAssignees(id, assignees, { validateCrew });
         } catch (error) {
@@ -145,14 +91,7 @@ export const requestsService = {
     async removeAssignee(id, technicianId) {
         const request = await this.getById(id);
 
-        const isLast =
-            request.status === 'in_progress' &&
-            request.assignees.length === 1 &&
-            request.assignees[0].technicianId === technicianId;
-        if (isLast) {
-            getLog().warn({ event: 'last_assignee_removed', requestId: id, technicianId }, 'Снятие последнего исполнителя с заявки в работе');
-            throw new ConflictError(NO_LAST_ASSIGNEE_MESSAGE, ASSIGNEE_REQUIRED_CODE);
-        }
+        assertAssigneeRemovable(request, technicianId);
 
         const removed = await requestsRepository.removeAssignee(id, technicianId);
         if (!removed) throw new NotFoundError('Назначение специалиста на заявку');
