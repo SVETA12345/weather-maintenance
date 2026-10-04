@@ -9,6 +9,8 @@ const TABLES = [
     'equipment',
     'sites',
     'technicians',
+    'refresh_tokens',
+    'users',
 ];
 
 export async function resetTestDb() {

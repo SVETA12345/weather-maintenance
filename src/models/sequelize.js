@@ -10,6 +10,13 @@ export const sequelize = new Sequelize(settings.database, settings.username, set
     port: Number(settings.port),
     dialect: settings.dialect,
     logging: false, // логи приложения идут через pino, запросы Sequelize не дублируем
+    pool: {
+        max: config.db.poolMax,
+        // keepAlive снижает вероятность того, что прокси или БД закроют соединение
+        // между запросами: на таком разрыве Sequelize переподключается сам, но
+        // первый запрос после простоя платит за переподключение.
+        idleTimeoutMillis: 30_000,
+    },
 });
 
 export const models = initModels(sequelize);

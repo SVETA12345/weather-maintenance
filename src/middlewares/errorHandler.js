@@ -8,13 +8,18 @@ export function errorHandler(err, req, res, _next) {
     const code = isApp ? err.code : 'INTERNAL_ERROR';
     const message = isApp ? err.message : 'Внутренняя ошибка сервера';
 
-    logger.error('request_failed', {
-        requestId: req.id,
-        status,
-        code,
-        message: err.message,
-        stack: config.isProd ? undefined : err.stack,
-    });
+    // pino принимает объект с полями только первым аргументом: logger.error('текст', {...})
+    // молча теряет поля, и в лог попадает только текст без кода и стека.
+    logger.error(
+        {
+            requestId: req.id,
+            status,
+            code,
+            message: err.message,
+            stack: config.isProduction ? undefined : err.stack,
+        },
+        'request_failed',
+    );
     
 
     const body = {

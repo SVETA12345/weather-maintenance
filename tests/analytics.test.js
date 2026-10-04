@@ -1,15 +1,16 @@
-import request from 'supertest';
 import { createApp } from '../src/app.js';
-import {
-    resetTestDb,
-    closeTestDb,
-    createTechnician,
-    getSiteIdOfEquipment,
-    setRequestCreatedAt,
-    setRequestDurationHours,
-} from './helpers/db.js';
+import { resetTestDb, closeTestDb, createTechnician, getSiteIdOfEquipment, setRequestCreatedAt, setRequestDurationHours } from './helpers/db.js';
+import { authed, authHeader } from './helpers/auth.js';
 
 const app = createApp();
+
+// Запросы набора выполняются от имени администратора: ровно этим набором проверяются
+// права по ролям, а 401/403 проверяются в auth.test.js.
+let api;
+
+async function authAsAdmin() {
+    api = authed(app, await authHeader(app, { role: 'admin' }));
+}
 
 // Площадка определяется координатами, поэтому площадка = уникальная пара lat/lon.
 const equipmentBody = (serialNumber, lat, lon) => ({
@@ -21,33 +22,34 @@ const equipmentBody = (serialNumber, lat, lon) => ({
 });
 
 const createEquipment = async (serialNumber, lat, lon) => {
-    const res = await request(app).post('/api/equipment').send(equipmentBody(serialNumber, lat, lon)).expect(201);
+    const res = await api.post('/api/equipment').send(equipmentBody(serialNumber, lat, lon)).expect(201);
     return res.body.data;
 };
 
 const createRequest = (equipmentId, title = 'Заявка', extra = {}) =>
-    request(app)
+    api
         .post('/api/requests')
         .send({ equipmentId, title, priority: 'medium', ...extra });
 
 beforeEach(async () => {
     await resetTestDb();
+    await authAsAdmin();
 });
 
 afterAll(closeTestDb);
 
 describe('GET /api/sites/:id/summary', () => {
     test('неизвестный id — 404, не-uuid — 404', async () => {
-        const unknown = await request(app).get('/api/sites/00000000-0000-4000-8000-000000000000/summary').expect(404);
+        const unknown = await api.get('/api/sites/00000000-0000-4000-8000-000000000000/summary').expect(404);
         expect(unknown.body.error.code).toBe('NOT_FOUND');
-        await request(app).get('/api/sites/not-a-uuid/summary').expect(404);
+        await api.get('/api/sites/not-a-uuid/summary').expect(404);
     });
 
     test('площадка без заявок: нули и null в среднем', async () => {
         const equipment = await createEquipment('SN-EMPTY-1', 10.1, 20.2);
         const siteId = await getSiteIdOfEquipment(equipment.id);
 
-        const res = await request(app).get(`/api/sites/${siteId}/summary`).expect(200);
+        const res = await api.get(`/api/sites/${siteId}/summary`).expect(200);
         expect(res.body.data).toEqual({
             siteId,
             total: 0,
@@ -67,12 +69,12 @@ describe('GET /api/sites/:id/summary', () => {
         const forDone = (await createRequest(equipment.id, 'В закрытую')).body.data;
         const forReject = (await createRequest(equipment.id, 'Отклонённая')).body.data;
 
-        await request(app).post(`/api/requests/${forWork.id}/assignees`).send([{ technicianId: technician.id, role: 'lead' }]);
-        await request(app).patch(`/api/requests/${forWork.id}/status`).send({ status: 'in_progress' });
-        await request(app).patch(`/api/requests/${forWork.id}/status`).send({ status: 'done' });
-        await request(app).patch(`/api/requests/${forReject.id}/status`).send({ status: 'rejected' });
+        await api.post(`/api/requests/${forWork.id}/assignees`).send([{ technicianId: technician.id, role: 'lead' }]);
+        await api.patch(`/api/requests/${forWork.id}/status`).send({ status: 'in_progress' });
+        await api.patch(`/api/requests/${forWork.id}/status`).send({ status: 'done' });
+        await api.patch(`/api/requests/${forReject.id}/status`).send({ status: 'rejected' });
 
-        const res = await request(app).get(`/api/sites/${siteId}/summary`).expect(200);
+        const res = await api.get(`/api/sites/${siteId}/summary`).expect(200);
         expect(res.body.data.total).toBe(4);
         expect(res.body.data.byStatus).toEqual({ new: 2, in_progress: 0, done: 1, rejected: 1 });
         expect(res.body.data.averageClosureHours).toEqual(expect.any(Number));
@@ -87,7 +89,7 @@ describe('GET /api/sites/:id/summary', () => {
             await createRequest(equipment.id, `Заявка ${priority}`, { priority }).expect(201);
         }
 
-        const res = await request(app).get(`/api/sites/${siteId}/summary`).expect(200);
+        const res = await api.get(`/api/sites/${siteId}/summary`).expect(200);
         expect(res.body.data.total).toBe(5);
         expect(res.body.data.byPriority).toEqual({ low: 1, medium: 1, high: 2, critical: 1 });
     });
@@ -102,23 +104,23 @@ describe('GET /api/sites/:id/summary', () => {
         const open = (await createRequest(equipment.id, 'Открытая')).body.data;
 
         for (const id of [first.id, second.id]) {
-            await request(app)
+            await api
                 .post(`/api/requests/${id}/assignees`)
                 .send([{ technicianId: technician.id, role: 'lead' }])
                 .expect(201);
-            await request(app).patch(`/api/requests/${id}/status`).send({ status: 'in_progress' }).expect(200);
-            await request(app).patch(`/api/requests/${id}/status`).send({ status: 'done' }).expect(200);
+            await api.patch(`/api/requests/${id}/status`).send({ status: 'in_progress' }).expect(200);
+            await api.patch(`/api/requests/${id}/status`).send({ status: 'done' }).expect(200);
         }
-        await request(app)
+        await api
             .post(`/api/requests/${open.id}/assignees`)
             .send([{ technicianId: technician.id, role: 'lead' }])
             .expect(201);
-        await request(app).patch(`/api/requests/${open.id}/status`).send({ status: 'in_progress' }).expect(200);
+        await api.patch(`/api/requests/${open.id}/status`).send({ status: 'in_progress' }).expect(200);
 
         await setRequestDurationHours(first.id, 2);
         await setRequestDurationHours(second.id, 3);
 
-        const res = await request(app).get(`/api/sites/${siteId}/summary`).expect(200);
+        const res = await api.get(`/api/sites/${siteId}/summary`).expect(200);
         expect(res.body.data.byStatus.done).toBe(2);
         expect(res.body.data.averageClosureHours).toBe(2.5);
     });
@@ -133,7 +135,7 @@ describe('GET /api/sites/:id/summary', () => {
         await createRequest(mine.id, 'Моя заявка');
         await createRequest(neighbour.id, 'Чужая заявка');
 
-        const res = await request(app).get(`/api/sites/${mySiteId}/summary`).expect(200);
+        const res = await api.get(`/api/sites/${mySiteId}/summary`).expect(200);
         expect(res.body.data.total).toBe(1);
         expect(res.body.data.byStatus.new).toBe(1);
     });
@@ -143,7 +145,7 @@ describe('GET /api/reports/equipment-load', () => {
     test('оборудование без заявок попадает в отчёт с нулями', async () => {
         await createEquipment('SN-IDLE-1', 15.1, 25.2);
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data).toHaveLength(1);
         expect(res.body.data[0]).toMatchObject({
             serialNumber: 'SN-IDLE-1',
@@ -162,7 +164,7 @@ describe('GET /api/reports/equipment-load', () => {
         const busy = await createEquipment('SN-BUSY-1', 18.1, 28.2);
         await createRequest(busy.id, 'Заявка');
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.meta.total).toBe(3);
         expect(res.body.data.map((row) => row.serialNumber)).toEqual(
             expect.arrayContaining(['SN-IDLE-2', 'SN-IDLE-3', 'SN-BUSY-1']),
@@ -179,16 +181,16 @@ describe('GET /api/reports/equipment-load', () => {
         await createRequest(equipment.id, 'Новая');
 
         for (const id of [inWork.id, done.id]) {
-            await request(app)
+            await api
                 .post(`/api/requests/${id}/assignees`)
                 .send([{ technicianId: technician.id, role: 'lead' }])
                 .expect(201);
-            await request(app).patch(`/api/requests/${id}/status`).send({ status: 'in_progress' }).expect(200);
+            await api.patch(`/api/requests/${id}/status`).send({ status: 'in_progress' }).expect(200);
         }
-        await request(app).patch(`/api/requests/${done.id}/status`).send({ status: 'done' }).expect(200);
-        await request(app).patch(`/api/requests/${rejected.id}/status`).send({ status: 'rejected' }).expect(200);
+        await api.patch(`/api/requests/${done.id}/status`).send({ status: 'done' }).expect(200);
+        await api.patch(`/api/requests/${rejected.id}/status`).send({ status: 'rejected' }).expect(200);
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data[0]).toMatchObject({
             serialNumber: 'SN-COUNT-1',
             requestsTotal: 4,
@@ -209,15 +211,15 @@ describe('GET /api/reports/equipment-load', () => {
         expect(withoutLabor.plannedLaborHours).toBeNull();
 
         for (const id of [withLabor.id, withoutLabor.id]) {
-            await request(app)
+            await api
                 .post(`/api/requests/${id}/assignees`)
                 .send([{ technicianId: technician.id, role: 'lead' }])
                 .expect(201);
-            await request(app).patch(`/api/requests/${id}/status`).send({ status: 'in_progress' }).expect(200);
+            await api.patch(`/api/requests/${id}/status`).send({ status: 'in_progress' }).expect(200);
         }
-        await request(app).patch(`/api/requests/${withLabor.id}/status`).send({ status: 'done' }).expect(200);
+        await api.patch(`/api/requests/${withLabor.id}/status`).send({ status: 'done' }).expect(200);
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data[0].plannedLaborHours).toBe(4.5);
         expect(typeof res.body.data[0].lastServiceAt).toBe('string');
         expect(new Date(res.body.data[0].lastServiceAt).toString()).not.toBe('Invalid Date');
@@ -227,7 +229,7 @@ describe('GET /api/reports/equipment-load', () => {
         const equipment = await createEquipment('SN-LABOR-2', 19.7, 29.8);
         await createRequest(equipment.id, 'Новая', { plannedLaborHours: 2 });
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data[0]).toMatchObject({ plannedLaborHours: 2, lastServiceAt: null });
         expect(res.body.data[0].lastRequestAt).toEqual(expect.any(String));
     });
@@ -235,7 +237,7 @@ describe('GET /api/reports/equipment-load', () => {
     test('оборудование без заявок даёт нулевые трудозатраты', async () => {
         await createEquipment('SN-LABOR-3', 19.9, 30.0);
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data[0]).toMatchObject({ plannedLaborHours: 0, lastServiceAt: null });
     });
 
@@ -248,7 +250,7 @@ describe('GET /api/reports/equipment-load', () => {
 
         const from = '2026-02-01T00:00:00.000Z';
         const to = '2026-12-31T00:00:00.000Z';
-        const res = await request(app)
+        const res = await api
             .get(`/api/reports/equipment-load?from=${from}&to=${to}`)
             .expect(200);
 
@@ -265,14 +267,14 @@ describe('GET /api/reports/equipment-load', () => {
         await createRequest(busy.id, 'Первая');
         await createRequest(busy.id, 'Вторая');
 
-        const res = await request(app).get('/api/reports/equipment-load?minRequests=2').expect(200);
+        const res = await api.get('/api/reports/equipment-load?minRequests=2').expect(200);
         expect(res.body.data.map((row) => row.serialNumber)).toEqual(['SN-MIN-1']);
         expect(res.body.meta.total).toBe(1);
         expect(idle.id).toBeTruthy();
     });
 
     test('некорректный minRequests — 422', async () => {
-        const res = await request(app).get('/api/reports/equipment-load?minRequests=-1').expect(422);
+        const res = await api.get('/api/reports/equipment-load?minRequests=-1').expect(422);
         expect(res.body.error.code).toBe('VALIDATION_ERROR');
     });
 
@@ -283,12 +285,12 @@ describe('GET /api/reports/equipment-load', () => {
         await createRequest(second.id, 'Вторая заявка');
         await createRequest(second.id, 'Третья заявка');
 
-        const byTotal = await request(app)
+        const byTotal = await api
             .get('/api/reports/equipment-load?sortBy=requestsTotal&order=desc')
             .expect(200);
         expect(byTotal.body.data.map((row) => row.serialNumber)).toEqual(['SN-SORT-2', 'SN-SORT-1']);
 
-        const byName = await request(app).get('/api/reports/equipment-load?sortBy=name').expect(200);
+        const byName = await api.get('/api/reports/equipment-load?sortBy=name').expect(200);
         expect(byName.body.data.map((row) => row.name)).toEqual(['Оборудование SN-SORT-1', 'Оборудование SN-SORT-2']);
     });
 
@@ -302,7 +304,7 @@ describe('GET /api/reports/equipment-load', () => {
         await createRequest(high.id, 'Открытая 2');
         expect(none.id).toBeTruthy();
 
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data.map((row) => row.requestsOpen)).toEqual([2, 1, 0]);
         // У двух с нулём открытых заявок порядок определяется именем по возрастанию.
         const idle = res.body.data.filter((row) => row.requestsOpen === 0);
@@ -314,38 +316,38 @@ describe('GET /api/reports/equipment-load', () => {
             await createEquipment(`SN-PAGE-${i}`, 30 + i / 10, 40 + i / 10);
         }
 
-        const firstPage = await request(app).get('/api/reports/equipment-load?page=1&limit=2').expect(200);
+        const firstPage = await api.get('/api/reports/equipment-load?page=1&limit=2').expect(200);
         expect(firstPage.body.data).toHaveLength(2);
         expect(firstPage.body.meta).toEqual({ total: 5, page: 1, limit: 2 });
 
-        const lastPage = await request(app).get('/api/reports/equipment-load?page=3&limit=2').expect(200);
+        const lastPage = await api.get('/api/reports/equipment-load?page=3&limit=2').expect(200);
         expect(lastPage.body.data).toHaveLength(1);
 
-        const beyond = await request(app).get('/api/reports/equipment-load?page=9&limit=2').expect(200);
+        const beyond = await api.get('/api/reports/equipment-load?page=9&limit=2').expect(200);
         expect(beyond.body.data).toHaveLength(0);
         expect(beyond.body.meta.total).toBe(5);
     });
 
     test('limit и offset вне диапазона — 400 INVALID_PAGINATION', async () => {
-        const tooBigLimit = await request(app).get('/api/reports/equipment-load?limit=101').expect(400);
+        const tooBigLimit = await api.get('/api/reports/equipment-load?limit=101').expect(400);
         expect(tooBigLimit.body.error.code).toBe('INVALID_PAGINATION');
         expect(tooBigLimit.body.error.details.map((d) => d.field)).toEqual(['limit']);
 
-        const zeroLimit = await request(app).get('/api/reports/equipment-load?limit=0').expect(400);
+        const zeroLimit = await api.get('/api/reports/equipment-load?limit=0').expect(400);
         expect(zeroLimit.body.error.code).toBe('INVALID_PAGINATION');
 
-        const tooBigOffset = await request(app).get('/api/reports/equipment-load?offset=10001').expect(400);
+        const tooBigOffset = await api.get('/api/reports/equipment-load?offset=10001').expect(400);
         expect(tooBigOffset.body.error.details.map((d) => d.field)).toEqual(['offset']);
 
-        const negativeOffset = await request(app).get('/api/reports/equipment-load?offset=-1').expect(400);
+        const negativeOffset = await api.get('/api/reports/equipment-load?offset=-1').expect(400);
         expect(negativeOffset.body.error.details.map((d) => d.field)).toEqual(['offset']);
 
         // offset, посчитанный через page, тоже ограничен
-        const deepPage = await request(app).get('/api/reports/equipment-load?page=200&limit=100').expect(400);
+        const deepPage = await api.get('/api/reports/equipment-load?page=200&limit=100').expect(400);
         expect(deepPage.body.error.details.map((d) => d.field)).toEqual(['offset']);
 
         // прочие нарушения схемы остаются 422
-        await request(app).get('/api/reports/equipment-load?minRequests=-1').expect(422);
+        await api.get('/api/reports/equipment-load?minRequests=-1').expect(422);
     });
 
     test('явный offset режет выборку так же, как page', async () => {
@@ -353,14 +355,14 @@ describe('GET /api/reports/equipment-load', () => {
             await createEquipment(`SN-OFF-${i}`, 50 + i / 10, 60 + i / 10);
         }
 
-        const byPage = await request(app).get('/api/reports/equipment-load?page=3&limit=2').expect(200);
-        const byOffset = await request(app).get('/api/reports/equipment-load?offset=4&limit=2').expect(200);
+        const byPage = await api.get('/api/reports/equipment-load?page=3&limit=2').expect(200);
+        const byOffset = await api.get('/api/reports/equipment-load?offset=4&limit=2').expect(200);
         expect(byOffset.body.data.map((row) => row.id)).toEqual(byPage.body.data.map((row) => row.id));
         expect(byOffset.body.meta.total).toBe(5);
     });
 
     test('пустой каталог оборудования — пустой массив и total 0', async () => {
-        const res = await request(app).get('/api/reports/equipment-load').expect(200);
+        const res = await api.get('/api/reports/equipment-load').expect(200);
         expect(res.body.data).toEqual([]);
         expect(res.body.meta.total).toBe(0);
     });

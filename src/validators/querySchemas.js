@@ -67,6 +67,15 @@ export const equipmentQuerySchema = withOffsetCeiling(
 
 export const equipmentRequestsQuerySchema = withOffsetCeiling(z.object(pageOnly));
 
+export const techniciansQuerySchema = withOffsetCeiling(
+    z.object({
+        ...pagination,
+        specialization: z.string().trim().min(1, 'specialization не должна быть пустой').max(100, 'specialization не может превышать 100 символов').optional(),
+        // Поиск по ФИО или табельному номеру, регистр не важен.
+        search: z.string().trim().min(1, 'search не должен быть пустым').max(100, 'search не может превышать 100 символов').optional(),
+    }),
+);
+
 export const requestsQuerySchema = withOffsetCeiling(
     z.object({
         ...pagination,

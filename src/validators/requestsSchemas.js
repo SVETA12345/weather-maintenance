@@ -9,7 +9,12 @@ export const requestCreateSchema = z.object({
     plannedLaborHours: z.number().nonnegative().max(10000).optional(),
 });
 
-export const requestPatchSchema = requestCreateSchema.partial().omit({ equipmentId: true });
+export const requestPatchSchema = requestCreateSchema.partial().omit({ equipmentId: true }).extend({
+    // Статус меняется только через PATCH /api/requests/:id/status, где проверяются
+    // допустимость перехода и назначение specialist'а. Если бы status просто попадал
+    // в «неизвестные поля», клиент получил бы 200 и решил, что статус изменился.
+    status: z.undefined({ invalid_type_error: 'Статус меняется отдельным запросом PATCH /api/requests/:id/status' }),
+});
 
 export const statusChangeSchema = z.object({
     status: z.enum(['new', 'in_progress', 'done', 'rejected']),

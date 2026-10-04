@@ -26,7 +26,7 @@ export const requestsController = {
     }),
 
     changeStatus: asyncHandler(async (req, res) => {
-        const updated = await requestsService.changeStatus(req.params.id, req.body.status);
+        const updated = await requestsService.changeStatus(req.params.id, req.body.status, req.user);
         res.json({ data: updated });
     }),
 

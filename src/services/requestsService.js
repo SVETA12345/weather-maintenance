@@ -3,8 +3,10 @@ import { equipmentRepository } from '../repositories/equipmentRepository.js';
 import { NotFoundError } from '../errors/NotFoundError.js';
 import { ConflictError } from '../errors/ConflictError.js';
 import { ValidationError } from '../errors/ValidationError.js';
+import { ForbiddenError } from '../errors/ForbiddenError.js';
 import { getLog } from '../utils/context.js';
 import { resolveOffset } from '../utils/paging.js';
+import { countCreatedRequest } from '../metrics/index.js';
 
 const TRANSITIONS = {
     new: ['in_progress', 'rejected'],
@@ -19,6 +21,28 @@ const HISTORY_AUTHOR = 'api';
 const ASSIGNEE_REQUIRED_CODE = 'ASSIGNEE_REQUIRED';
 const NO_CREW_MESSAGE = 'Нельзя перевести заявку в in_progress без назначенных исполнителей';
 const NO_LAST_ASSIGNEE_MESSAGE = 'Нельзя снять последнего исполнителя с заявки в статусе in_progress';
+const NOT_ASSIGNED_MESSAGE = 'Специалист может менять статус только тех заявок, на которые он назначен';
+
+// Правило живёт в сервисе, а не только в маршрутах: сервис должен отличать
+// «не хватает прав» от «недопустимое состояние» даже при вызове из другого места.
+function assertCanChangeStatus(actor, request) {
+    if (!actor || actor.role === 'admin') return;
+
+    if (actor.role !== 'technician') {
+        throw new ForbiddenError('Роль viewer не позволяет менять статус заявок', 'ROLE_REQUIRED');
+    }
+
+    const isAssigned =
+        actor.technicianId !== null &&
+        request.assignees.some((assignee) => assignee.technicianId === actor.technicianId);
+    if (!isAssigned) {
+        getLog().warn(
+            { event: 'status_change_forbidden', requestId: request.id, userId: actor.id, technicianId: actor.technicianId },
+            'Смена статуса заявки, на которой специалист не назначен',
+        );
+        throw new ForbiddenError(NOT_ASSIGNED_MESSAGE, 'NOT_ASSIGNED');
+    }
+}
 
 export const requestsService = {
     async list({ page, limit, offset, ...filters }) {
@@ -39,6 +63,7 @@ export const requestsService = {
         const equipment = await equipmentRepository.findById(data.equipmentId);
         if (!equipment) throw new NotFoundError('Оборудование');
         const created = await requestsRepository.create(data);
+        countCreatedRequest(created.priority);
         getLog().info({ event: 'request_created', id: created.id, equipmentId: created.equipmentId }, 'Заявка создана');
         return created;
     },
@@ -50,8 +75,10 @@ export const requestsService = {
         return updated;
     },
 
-    async changeStatus(id, status) {
+    async changeStatus(id, status, actor) {
         const current = await this.getById(id);
+        assertCanChangeStatus(actor, current);
+
         const allowed = TRANSITIONS[current.status] ?? [];
         if (!allowed.includes(status)) {
             getLog().warn({ event: 'invalid_status_transition', id, from: current.status, to: status }, 'Недопустимый переход статуса');
@@ -67,7 +94,7 @@ export const requestsService = {
         }
 
         const updated = await requestsRepository.setStatus(id, status, { author: HISTORY_AUTHOR });
-        getLog().info({ event: 'request_status_changed', id, from: current.status, to: status }, 'Статус заявки изменён');
+        getLog().info({ event: 'request_status_changed', id, from: current.status, to: status, userId: actor?.id }, 'Статус заявки изменён');
         return updated;
     },
 

@@ -1,0 +1,47 @@
+# Правила оповещений. Пороги вынесены в отдельные правила, чтобы их правка
+# не требовала изменений в дашборде, а порядок действий описан в README.
+groups:
+  - name: weather-maintenance-api
+    rules:
+      # Недоступность сервиса: Prometheus не может снять метрики дольше двух окон.
+      - alert: ApiUnavailable
+        expr: up{job="weather-maintenance-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Сервис заявок недоступен'
+          description: 'Prometheus не может снять метрики с weather-maintenance-api более 2 минут. Проверьте контейнер: docker compose ps api и docker compose logs --tail=200 api'
+
+      # Готовность падает при недоступной БД: процесс жив, но трафик не обслуживает.
+      - alert: ApiNotReady
+        expr: service_up{job="weather-maintenance-api"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Сервис не готов: недоступна база данных'
+          description: 'GET /api/health/ready возвращает 503 дольше 3 минут. Проверьте БД: docker compose ps db и docker compose logs --tail=200 db'
+
+      # Доля ответов 5xx выше порога.
+      - alert: HighServerErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="weather-maintenance-api", status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total{job="weather-maintenance-api"}[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Доля ответов 5xx выше 5%'
+          description: 'Более 5% запросов к weather-maintenance-api возвращают 5xx в течение 5 минут. Смотрите логи по requestId из панели ошибок.'
+
+      # Медленные ответы.
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="weather-maintenance-api"}[5m])) by (le)) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Время ответа p95 выше 1 секунды'
+          description: 'Медиана хвоста ответов API превысила 1 с. Проверьте загрузку БД и состояние пула соединений: maintenance_db_pool_in_use / maintenance_db_pool_max.'

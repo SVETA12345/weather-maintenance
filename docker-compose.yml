@@ -45,15 +45,109 @@ services:
       db:
         condition: service_healthy
     healthcheck:
+      # Готовность, а не живость: контейнер считается здоровым, только когда
+      # сервис действительно обслуживает трафик (в том числе при доступной БД).
       test:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        - "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
 
+  # Мониторинг подключается к API по внутренней сети compose (/metrics не требует
+  # access-токена и не закрыт rate limit-ом), а порт публикуется наружу только для
+  # доступа к UI Prometheus с рабочего места.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: weather-maintenance-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: weather-maintenance-alertmanager
+    restart: unless-stopped
+    entrypoint:
+      # Alertmanager не раскрывает переменные окружения в конфигурации, поэтому
+      # шаблон рендерится при старте, проверяется amtool и только затем запускается
+      # сам Alertmanager (иначе smarthost остался бы буквальным ${ALERT_SMTP_HOST}).
+      - /bin/sh
+    command:
+      - /etc/alertmanager/render-config.sh
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./monitoring/alertmanager/render-config.sh:/etc/alertmanager/render-config.sh:ro
+      - alertmanager-data:/alertmanager
+    environment:
+      # Рендерер подставляет их в шаблон alertmanager.yml: адресат и SMTP меняются
+      # без правки файла в репозитории.
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-ops@example.com}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-alerts@example.com}
+      ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-localhost}
+      ALERT_SMTP_PORT: ${ALERT_SMTP_PORT:-25}
+      ALERT_SMTP_USER: ${ALERT_SMTP_USER:-alerts}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-alerts}
+      ALERT_SMTP_REQUIRE_TLS: ${ALERT_SMTP_REQUIRE_TLS:-false}
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    depends_on:
+      - prometheus
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: weather-maintenance-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Источник данных и дашборд приходят из репозитория через provisioning.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/maintenance-overview.json
+      GF_USERS_DEFAULT_THEME: light
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Оповещения в проекте только почтовые: Prometheus -> Alertmanager -> SMTP.
+      # Собственные правила Grafana не используются, поэтому Unified Alerting и
+      # legacy-алертинг выключены.
+      GF_UNIFIED_ALERTING_ENABLED: "false"
+      GF_ALERTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health | grep -q ok"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
 volumes:
   pgdata:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
