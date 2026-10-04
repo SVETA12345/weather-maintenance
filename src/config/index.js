@@ -24,11 +24,27 @@ function resolveSecret(name) {
     return value;
 }
 
+// Доверие обратному прокси. 'loopback' — доверять только localhost, число —
+// количество доверенных хопов (1 для nginx во внутренней сети), 'true' — любые
+// адреса (только если приложение доступно напрямую из интернета). При выключенном
+// доверии req.ip равен адресу прокси, поэтому ограничение частоты считает всех
+// клиентов одним и логи теряют реальный адрес.
+function resolveTrustProxy(value) {
+    if (value === undefined || value === '' ) return false;
+    if (value === 'false' || value === '0') return false;
+    if (value === 'true') return true;
+    if (value === 'loopback') return 'loopback';
+    const hops = Number.parseInt(value, 10);
+    if (Number.isInteger(hops) && hops > 0) return hops;
+    throw new Error(`Некорректное значение TRUST_PROXY: "${value}" (ожидается true, false, loopback или число хопов)`);
+}
+
 export const config = {
     env,
     isProduction,
     port: Number.parseInt(process.env.PORT, 10) || 3000,
     logLevel: process.env.LOG_LEVEL || 'info',
+    trustProxy: resolveTrustProxy(process.env.TRUST_PROXY),
     health: {
         // Проверка готовности не должна висеть дольше healthcheck контейнера.
         dbTimeoutMs: Number.parseInt(process.env.HEALTH_DB_TIMEOUT_MS, 10) || 2000,

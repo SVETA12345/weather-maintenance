@@ -33,13 +33,31 @@ const httpLogger = pinoHttp({
     if (res.statusCode >= 400) return 'warn';
     return 'info';
   },
+  // remoteAddress в стандартном сериализаторе pino берётся из сокета, поэтому за
+  // nginx там всегда адрес прокси. clientIp — это req.ip, то есть реальный адрес
+  // клиента из X-Real-IP/X-Forwarded-For (работает, пока включено доверие прокси).
+  customAttributeKeys: ['clientIp'],
+  customProps: (req) => ({ clientIp: req.ip }),
   autoLogging: {
     ignore: (req) => req.url?.endsWith('/health'),
   },
 });
 
+// Доверие обратному прокси (nginx). express-rate-limit считает окно по req.ip,
+// а pino-http пишет remoteAddress из req.ip, поэтому без доверия к прокси все
+// клиенты выглядели бы одним адресом, а rate limit ограничивал бы всех сразу.
+// Вынесено отдельной функцией, чтобы правило проверялось модульным тестом.
+export function applyTrustProxy(app, trustProxy = config.trustProxy) {
+  if (trustProxy === false || trustProxy === undefined || trustProxy === null) return app;
+  app.set('trust proxy', trustProxy);
+  return app;
+}
+
 export function createApp() {
   const app = express();
+
+  // 0. Доверие обратному прокси: см. applyTrustProxy. В compose это один хоп до nginx.
+  applyTrustProxy(app);
 
   // 1. Безопасность (helmet)
   app.use(helmet());

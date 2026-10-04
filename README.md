@@ -74,15 +74,22 @@ docker compose restart api
 > случае поставьте свободный порт, например `DB_PORT=5434`, и пересоздайте БД:
 > `docker compose up -d --force-recreate db`.
 
-Адреса стека мониторинга (порты меняются переменными `PORT`, `PROMETHEUS_PORT`,
-`ALERTMANAGER_PORT`, `GRAFANA_PORT`):
+Наружу всё публикует только nginx (см. «Обратный прокси»). Порты меняются
+переменными `NGINX_PORT`, `PROMETHEUS_PORT`, `ALERTMANAGER_PORT`, `GRAFANA_PORT`:
 
 | Сервис       | Адрес                    | Учётные данные              |
 | ------------ | ------------------------ | --------------------------- |
-| API          | http://localhost:3000    | —                           |
+| Приложение через прокси | http://localhost:8080 | —                  |
+| API напрямую (только с рабочего компьютера) | http://localhost:3000 | —     |
 | Prometheus   | http://localhost:9090    | —                           |
 | Grafana      | http://localhost:3001    | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` (по умолчанию `admin` / `admin`) |
 | Alertmanager | http://localhost:9093    | —                           |
+
+Метрики Prometheus (`http://localhost:8080/metrics`) и все три интерфейса
+мониторинга отдаются только с разрешённых адресов — список в
+`deploy/nginx/conf.d/monitoring-allow.inc` (по умолчанию localhost и приватные
+сети). Прямой порт API оставлен на `127.0.0.1`: обратиться к приложению в обход
+прокси и подделать `X-Forwarded-For` нельзя.
 
 Дашборд и источник данных в Grafana появляются сами при старте: ручная настройка
 после развёртывания не требуется (см. «Мониторинг»).
@@ -132,6 +139,7 @@ docker compose restart api
 | ------------------------- | ------------------------------------------------ | ----------------------------------------------------------- |
 | `NODE_ENV`                | `development`                                    | Окружение (`production` выключает pino-pretty)              |
 | `PORT`                    | `3000`                                           | Порт HTTP-сервера                                           |
+| `TRUST_PROXY`             | (выключено; в compose `1`)                       | Доверие обратному прокси: `1` — один хоп (nginx), `loopback`, `true`, `false`. Нужно, чтобы rate limit и логи видели реальный IP клиента |
 | `LOG_LEVEL`               | `info`                                           | Уровень логирования pino                                    |
 | `CORS_ORIGINS`            | (пусто)                                          | Разрешённые источники CORS (через запятую)                  |
 | `RATE_LIMIT_WINDOW_MS`    | `900000` (15 мин)                                | Окно ограничения частоты запросов                           |
@@ -912,12 +920,54 @@ curl "http://localhost:3000/api/reports/equipment-load?page=1&limit=20&minReques
 
 Сервис логирует через pino: старт/стоп, каждый HTTP-запрос (метод, url, статус, длительность, `reqId`) и бизнес-события (`equipment_created`, `request_status_changed` и т.д.) с привязкой к `reqId`. Уровни: `fatal`, `error` (5xx), `warn` (4xx), `info`, `debug` (выключен в production). Пример поиска всех записей одного запроса: `grep '"reqId":"<uuid>"' app.log`.
 
+## Обратный прокси (nginx)
+
+Nginx — единственная точка входа снаружи. Конфигурация лежит в репозитории и
+монтируется в контейнер `read-only`, поэтому ручной настройки после
+развёртывания не требуется:
+
+```bash
+docker compose up -d --build nginx    # или просто docker compose up -d
+curl http://localhost:8080/api/health
+```
+
+| Файл                                | Что делает                                                        |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| `deploy/nginx/nginx.conf`           | логи с реальным IP и `request_id`, gzip, таймауты проксирования   |
+| `deploy/nginx/conf.d/app.conf`      | порт 80: `location` для API, `/api/docs`, статики, служебных путей и `/metrics` |
+| `deploy/nginx/conf.d/monitoring.conf` | порты 9090/9093/3001: Prometheus, Alertmanager и Grafana         |
+| `deploy/nginx/conf.d/monitoring-allow.inc` | список адресов, которым разрешён доступ к метрикам и UI   |
+
+Что уже настроено:
+
+- заголовки клиента: `Host`, `X-Real-IP`, `X-Forwarded-For`,
+  `X-Forwarded-Proto` (плюс `X-Forwarded-Host` и `X-Request-Id`);
+- `TRUST_PROXY=1` у приложения: rate limit и поле `clientIp` в логах считают
+  реальный IP клиента, а подделка `X-Forwarded-For` слева не проходит
+  (express берёт крайний правый адрес цепочки);
+- таймауты: connect 5 с, send/read 60 с; тело запроса ограничено 1 МБ
+  (`client_max_body_size`, ответ 413), ответы больше 1 КБ сжимаются (gzip);
+- маршруты разведены по `location`: `/api/docs` (Swagger UI и спецификация),
+  `/api/` (API), `/` и `/app.js` (статика), `/metrics` и `/nginx-health`
+  (служебные), всё остальное — в приложение;
+- доступ к `/metrics` и интерфейсам мониторинга ограничен списком адресов
+  (по умолчанию localhost и приватные сети), а прямые host-порты Prometheus,
+  Alertmanager и Grafana убраны — UI доступен только через nginx.
+
+Тонкая настройка: лимит тела и таймауты заданы в `deploy/nginx/conf.d/app.conf`
+(это обычный конфиг nginx, переменные окружения в нём не раскрываются), список
+разрешённых адресов — в `monitoring-allow.inc`. После правки конфигурации:
+
+```bash
+docker compose restart nginx
+```
+
 ## Мониторинг
 
 Стек мониторинга входит в `docker compose` и поднимается вместе с приложением:
 
 ```bash
-docker compose up -d --build          # api, db, prometheus, alertmanager, grafana
+docker compose up -d --build          # api, db, prometheus, alertmanager, grafana, nginx
 docker compose ps                     # все сервисы должны быть up (healthy)
 ```
 
@@ -1081,12 +1131,19 @@ Alertmanager будет `dial tcp ...:25: connect: connection refused`, что �
 ```
 weather-maintenance-api/
 ├── er_diagramma.png               # ER-диаграмма схемы БД (раздел «Модель данных»)
-├── docker-compose.yml             # api, PostgreSQL, prometheus, alertmanager, grafana, healthcheck-и
+├── docker-compose.yml             # api, PostgreSQL, prometheus, alertmanager, grafana, nginx, healthcheck-и
 ├── Dockerfile                     # образ приложения (только production-зависимости)
 ├── .env                           # локальные параметры (создаётся из .env.example)
 ├── docs/
 │   └── postman/collection.json   # Postman-коллекция (эндпоинты + негативные сценарии, pm.test)
 │                                 # спецификация OpenAPI 3.0.3 отдаётся из /api/docs/openapi.json
+├── deploy/
+│   └── nginx/
+│       ├── nginx.conf            # базовый конфиг: логи, gzip, таймауты проксирования
+│       └── conf.d/
+│           ├── app.conf          # location для API, /api/docs, статики, служебных путей, /metrics
+│           ├── monitoring.conf   # порты 9090/9093/3001 для Prometheus, Alertmanager и Grafana
+│           └── monitoring-allow.inc # список адресов, которым разрешён доступ к метрикам и UI
 ├── monitoring/
 │   ├── prometheus/prometheus.yml # цели скрейпа
 │   ├── prometheus/alerts.yml     # правила оповещений
@@ -1103,6 +1160,9 @@ weather-maintenance-api/
 ├── tests/
 │   ├── globalSetup.js             # создаёт БД maintenance_test и накатывает миграции
 │   ├── helpers/db.js              # resetTestDb, createTechnician, createPassport, счётчики строк
+│   ├── unit/requestRules.test.js  # модульные: переходы статусов, правила бригады, права ролей
+│   ├── unit/requireRole.test.js   # модульные: requireRole (401/403, требуемые роли)
+│   ├── unit/trustProxy.test.js    # модульные: доверие прокси, req.ip и req.protocol по X-Forwarded-*
 │   ├── health.test.js             # health live/ready/metrics, 404, X-Request-Id, CORS
 │   ├── metrics.test.js            # /metrics и прикладные метрики
 │   ├── docs.test.js               # OpenAPI: спецификация, Swagger UI, 404
@@ -1129,7 +1189,9 @@ weather-maintenance-api/
 │   ├── models/                   # Sequelize-модели и ассоциации
 │   ├── repositories/             # доступ к данным (equipment, requests, sites, reports, technicians)
 │   ├── routes/                   # index, health, auth, docs, equipment, requests, sites, reports, technicians
-│   ├── services/                 # бизнес-логика (equipment, requests, sites, reports, auth, metrics)
+│   ├── services/
+│   │   ├── requestRules.js        # чистые правила заявок: переходы статусов, бригада, права
+│   │   └── *Service.js            # бизнес-логика (equipment, requests, sites, reports, auth, metrics)
 │   ├── utils/                    # id, logger (pino), context (AsyncLocalStorage), paging, lifecycle
 │   ├── validators/               # Zod-схемы (equipmentSchemas, requestsSchemas, querySchemas)
 │   ├── app.js                    # сборка Express-приложения
@@ -1142,11 +1204,32 @@ weather-maintenance-api/
 
 ## Автотесты (Jest + Supertest)
 
-Запуск: `npm test` (184 сценария в 11 наборах, `--runInBand`; требует Node с
+Запуск: `npm test` (217 сценариев в 13 наборах, `--runInBand`; требует Node с
 поддержкой `--experimental-vm-modules` и запущенный PostgreSQL).
 
 ```bash
-npm test
+npm test              # 217 сценариев в 13 наборах
+npm run test:coverage # те же тесты + отчёт о покрытии
+npm run test:db:drop  # удалить тестовую БД
+```
+
+**Отчёт о покрытии** формируется командой `npm run test:coverage`: выводится
+таблица в терминал и складывается отчёт в `coverage/` (`index.html` для браузера,
+`lcov.info` для CI). Текущие значения: statements 92.6%, branches 72.8%,
+functions 96.4%, lines 95.4%. В `package.json` заданы пороги
+`coverageThreshold` (statements 85, branches 65, functions 90, lines 85): если
+покрытие упадёт ниже, `npm run test:coverage` завершится с ошибкой — регрессия
+не пройдёт молча. Из подсчёта исключены `src/server.js`, сидеры и миграции.
+
+**Модульные тесты бизнес-логики** лежат в `tests/unit/` и не трогают ни базу, ни
+HTTP — они проверяют чистые правила из `src/services/requestRules.js`
+(допустимые переходы статусов, ровно один `lead` в бригаде, запрет снятия
+последнего исполнителя заявки в работе, права ролей `viewer` / `technician` /
+`admin` на смену статуса) и middleware `requireRole` (401 без пользователя, 403
+`ROLE_REQUIRED` с перечислением требуемых ролей). Запускаются отдельно:
+
+```bash
+npx jest tests/unit --runInBand   # 33 сценария, ~3 с
 ```
 
 Тесты работают по отдельной базе `maintenance_test`: она создаётся и
