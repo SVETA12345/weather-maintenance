@@ -4,3 +4,7 @@ reports/
 *.log
 .DS_Store
 coverage/
+
+# Приватные ключи TLS в репозиторий не попадают никогда: сертификаты выпускаются
+# локально (mkcert) и монтируются в контейнер из deploy/nginx/certs/.
+deploy/nginx/certs/

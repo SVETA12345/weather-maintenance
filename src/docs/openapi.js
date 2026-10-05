@@ -59,7 +59,9 @@ export function buildOpenApiDocument() {
                 'Идентификатор запроса возвращается в заголовке `X-Request-Id`.',
             ].join('\n'),
         },
-        servers: [{ url: '/', description: 'Текущий сервер' }],
+        servers: config.docs.serverUrl
+            ? [{ url: config.docs.serverUrl, description: 'Configured server' }]
+            : [{ url: '/', description: 'Текущий сервер' }],
         tags: [
             { name: 'auth', description: 'Аутентификация и роли' },
             { name: 'equipment', description: 'Оборудование' },
