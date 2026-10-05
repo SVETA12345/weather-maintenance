@@ -47,6 +47,7 @@ npm start              # продакшен-запуск (JSON-логи)
 `sequelize-cli` нужен из `devDependencies`.
 
 ```bash
+cp .env.example .env
 # 1. поднять контейнеры (БД — именованный том pgdata, API ждёт healthcheck БД)
 docker compose up -d --build
 
@@ -54,10 +55,10 @@ docker compose up -d --build
 docker compose ps
 
 # 3. применить миграции: создают схему и переносят данные Кейса 2
-npx sequelize-cli db:migrate
+docker compose exec api npx sequelize-cli db:migrate
 
 # 4. наполнить демонстрационными данными
-npx sequelize-cli db:seed:all
+docker compose exec api npx sequelize-cli db:seed:all
 
 # 5. перезапустить API, чтобы он подхватил схему
 docker compose restart api
