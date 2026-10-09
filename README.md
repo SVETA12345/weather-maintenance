@@ -38,7 +38,15 @@ npm start              # продакшен-запуск (JSON-логи)
 Сервер по умолчанию поднимается на `http://localhost:3000`. Проверка: `GET /api/health`.
 
 ### Развёртывание с нуля (Docker)
-
+Вначале необходимо создать SSL сертификат. Я его создавала для ЛОКАЛЬНОЙ виртуальной машины следующими командами (192.168.1.10 - ip сервера):
+```bash
+# 1. Создание сертификата для  127.0.0.1 и 192.168.1.10
+mkcert -cert-file fullchain.pem -key-file privkey.pem localhost 127.0.0.1 ::1 192.168.1.10
+# 2. Создать папку
+mkdir ./deploy/nginx/certs
+# 3. Скопировать сертификат в эту папку
+ scp fullchain.pem privkey.pem sveta@192.168.1.10:~/ver_1/weather-maintenance/deploy/nginx/certs/
+```
 Порядок: поднять PostgreSQL → дождаться healthcheck → применить миграции →
 наполнить сидами → запустить приложение. `docker compose up -d --build` поднимает
 и БД, и API (API ждёт `service_healthy` у БД), а также весь стек мониторинга
